@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>供应商成本 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard">经营总览</a>
+    <a href="/data-import">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details">退款明细</a>
+    <a href="/supplier-costs" class="active">供应商成本</a>
+    <a href="/reconciliation">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create">创建用户</a>
+      <a href="/stores">店铺管理</a>
+      <a href="/users">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">供应商成本明细</div>
+  <div class="page-desc">逐行展示供应商/物流成本记录。月份筛选默认按供应商订单创建时间（created_at）归属（左闭右开区间），可切换为发货时间口径（快递发货时间缺失的记录在按发货时间筛选时不会展示）。</div>
+
+  <div id="month-filter"></div>
+  <div id="store-scope"></div>
+
+  <div class="stat-grid" id="stat-grid"></div>
+
+  <div class="card">
+    <div class="filter-grid">
+      <div class="filter-item"><label>关键词</label><input id="f-keyword" placeholder="主订单号/订单号/快递单号/商品标题"></div>
+      <div class="filter-item"><label>匹配状态</label>
+        <select id="f-match">
+          <option value="">全部</option>
+          <option value="unmatched">未匹配</option>
+          <option value="matched">已匹配</option>
+          <option value="manual_confirmed">人工确认</option>
+          <option value="suspected">疑似匹配</option>
+        </select>
+      </div>
+      <div class="filter-item"><label>时间口径</label>
+        <select id="f-time-field">
+          <option value="created_at">订单创建时间（默认）</option>
+          <option value="ship_time">发货时间</option>
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button class="btn" id="btn-query">查询</button>
+        <button class="btn secondary" id="btn-reset">重置</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card table-card">
+    <div class="card-head"><h3 style="margin:0">成本明细列表</h3>
+      <div class="head-actions">
+        <span class="hint" id="table-hint"></span>
+        <button class="btn secondary" id="btn-export">导出当前筛选</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="cost-table">
+        <thead><tr>
+          <th>主订单编号</th><th>供应商订单号</th><th>创建时间</th><th>发货时间</th>
+          <th>商品标题</th><th class="num">数量</th>
+          <th class="num">产品成本</th><th class="num">快递费</th>
+          <th class="num">总金额</th><th class="num">补贴</th>
+          <th>快递单号</th><th>粒度</th><th>匹配状态</th><th class="col-op">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="table-state"></div>
+    <div class="pager" id="pager"></div>
+  </div>
+</div>
+
+<!-- 成本明细模态 -->
+<div class="modal-mask" id="detail-modal">
+  <div class="modal" style="max-width:720px">
+    <div class="modal-head"><h3 id="detail-title">成本明细详情</h3><button class="modal-close" onclick="document.getElementById('detail-modal').classList.remove('show')">×</button></div>
+    <div class="modal-body" id="detail-body"></div>
+  </div>
+</div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/month_filter.js"></script>
+<script src="/static/store_scope.js"></script>
+<script>
+const STATE = { page: 1, size: 50, rows: [] };
+
+const MF = new MonthFilter({
+  container: "month-filter",
+  timeLabel: "供应商订单创建时间",
+  onChange: () => { STATE.page = 1; load(); },
+});
+
+const SS = new StoreScope({
+  container: "store-scope",
+  onChange: () => { STATE.page = 1; load(); },
+});
+
+const TIME_FIELD_LABEL = {
+  created_at: "供应商订单创建时间",
+  ship_time: "发货时间（快递发货，缺失记录不参与筛选）",
+};
+
+function queryStr() {
+  const p = new URLSearchParams();
+  p.set("page", STATE.page); p.set("page_size", STATE.size);
+  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
+  SS.appendTo(p);
+  const v = id => document.getElementById(id).value.trim();
+  if (v("f-keyword")) p.set("keyword", v("f-keyword"));
+  if (v("f-match")) p.set("match_status", v("f-match"));
+  p.set("time_field", v("f-time-field"));
+  return p.toString();
+}
+
+async function load() {
+  const state = document.getElementById("table-state");
+  const tbody = document.querySelector("#cost-table tbody");
+  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  tbody.innerHTML = "";
+  try {
+    const data = await API.get(`/api/supplier-costs?${queryStr()}`);
+    STATE.rows = data.costs;
+    renderStats(data.statistics);
+    state.innerHTML = "";
+    if (!data.costs.length) {
+      state.innerHTML = `<div class="empty-state"><div class="icon">🚚</div>当前筛选（${esc(MF.getLabel())}）内没有成本记录<br><span style="font-size:12px">可切换月份/时间口径或选择「全部」；或先在「数据导入」页导入供应商成本 Excel</span></div>`;
+    } else {
+      tbody.innerHTML = data.costs.map((r, i) => {
+        const cb = r.cost_breakdown || {}, p = r.product || {}, t = r.tracking || {};
+        return `<tr>
+          <td>${esc(r.main_order_id || "—")}</td>
+          <td>${esc(r.supplier_order_id || "—")}</td>
+          <td>${fmtTime(r.created_at)}</td>
+          <td>${fmtTime(t.ship_time)}</td>
+          <td style="max-width:200px;white-space:normal" title="${esc(p.title || "")}">${esc((p.title || "—").slice(0, 26))}</td>
+          <td class="num">${p.quantity ?? "—"}</td>
+          <td class="num">${fmtMoney(cb.product_supply_cost)}</td>
+          <td class="num">${fmtMoney(cb.courier_fee)}</td>
+          <td class="num"><b>${fmtMoney(cb.total_amount)}</b></td>
+          <td class="num">${fmtMoney(r.platform_subsidy)}</td>
+          <td style="font-size:12px">${esc(t.tracking_number || "—")}</td>
+          <td style="font-size:12px">${esc(r.cost_granularity || "—")}</td>
+          <td>${matchBadge(r.match_status)}</td>
+          <td class="col-op"><button class="link-btn" onclick="showDetail(${i})">详情</button></td>
+        </tr>`;
+      }).join("");
+    }
+    document.getElementById("table-hint").textContent = data.total ? `第 ${data.page}/${data.pages} 页` : "";
+    renderPager(document.getElementById("pager"), data, {
+      onPage: p => { STATE.page = p; load(); },
+      onSize: s => { STATE.size = s; STATE.page = 1; load(); },
+    });
+  } catch (e) {
+    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败，请稍后重试")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
+    renderStats(null);
+  }
+}
+
+const MATCH_META = {
+  matched: ["已匹配", "green"], manual_confirmed: ["人工确认", "blue"],
+  suspected: ["疑似匹配", "orange"], unmatched: ["未匹配", "red"],
+};
+function matchBadge(s) {
+  const [label, color] = MATCH_META[s] || [s || "—", "gray"];
+  return `<span class="badge ${color}">${esc(label)}</span>`;
+}
+
+function renderStats(s) {
+  const el = document.getElementById("stat-grid");
+  if (!s) { el.innerHTML = ""; return; }
+  el.innerHTML = [
+    ["成本记录数", s.cost_line_count, ""],
+    ["综合成本合计", fmtMoneyYuan(s.total_amount_sum), "danger"],
+    ["产品成本合计", fmtMoneyYuan(s.product_supply_cost_sum), ""],
+    ["快递费合计", fmtMoneyYuan(s.courier_fee_sum), ""],
+    ["平台补贴合计", fmtMoneyYuan(s.platform_subsidy_sum), "success"],
+  ].map(([l, v, c]) => `<div class="stat-item"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("")
+    + `<div style="grid-column:1/-1;font-size:12px;color:var(--text-light)">当前时间口径：${TIME_FIELD_LABEL[s.time_field] || s.time_field}。</div>`;
+}
+
+function showDetail(i) {
+  const r = STATE.rows[i];
+  const cb = r.cost_breakdown || {}, p = r.product || {}, t = r.tracking || {};
+  document.getElementById("detail-title").textContent = `成本明细：${r.record_id}`;
+  document.getElementById("detail-body").innerHTML = `
+    <div class="detail-section"><h4>订单与商品</h4>
+      <div class="kv-grid">
+        ${[
+          ["主订单编号", r.main_order_id || "—"], ["供应商订单号", r.supplier_order_id || "—"],
+          ["商品标题", p.title || "—"], ["规格", p.sku_attribute || "—"],
+          ["数量", p.quantity ?? "—"], ["成本粒度", r.cost_granularity || "—"],
+          ["匹配状态", ""], ["重复风险", r.duplicate_total_amount_risk ? "是" : "否"],
+        ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${typeof v === "string" && v === "" ? matchBadge(r.match_status) : esc(v)}</div></div>`).join("")}
+      </div>
+    </div>
+    <div class="detail-section"><h4>时间与物流</h4>
+      <div class="kv-grid">
+        ${[
+          ["订单创建时间", fmtTime(r.created_at)], ["发货时间", fmtTime(t.ship_time)],
+          ["快递单号", t.tracking_number || "—"], ["供应商实收", fmtMoneyYuan(r.supplier_actual_received)],
+        ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join("")}
+      </div>
+    </div>
+    <div class="detail-section"><h4>成本分项</h4>
+      <div class="kv-grid">
+        ${[
+          ["产品成本", fmtMoneyYuan(cb.product_supply_cost)],
+          ["快递费", fmtMoneyYuan(cb.courier_fee)],
+          ["泡沫耗材费", fmtMoneyYuan(cb.foam_material_fee)],
+          ["加收", fmtMoneyYuan(cb.surcharge)],
+          ["燃油/打包费", fmtMoneyYuan(cb.fuel_or_tianjin_packing_fee)],
+          ["快递费合计", fmtMoneyYuan(cb.courier_fee_total)],
+          ["总金额（综合成本）", `<b>${fmtMoneyYuan(cb.total_amount)}</b>`],
+          ["平台补贴", fmtMoneyYuan(r.platform_subsidy)],
+        ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
+      </div>
+    </div>
+    <div class="detail-section"><h4>数据溯源</h4>
+      <div class="kv-grid">
+        <div class="kv"><div class="k">记录 ID</div><div class="v">${esc(r.record_id)}</div></div>
+        <div class="kv"><div class="k">导入批次</div><div class="v">${esc(r.batch_id || "—")}</div></div>
+        <div class="kv"><div class="k">源记录</div><div class="v">${esc(r.source_record_id || "—")}</div></div>
+      </div>
+    </div>`;
+  document.getElementById("detail-modal").classList.add("show");
+}
+
+document.getElementById("btn-query").onclick = () => { STATE.page = 1; load(); };
+document.querySelector(".filter-grid").addEventListener("change", e => {
+  if (e.target.matches("select")) { STATE.page = 1; load(); }
+});
+document.getElementById("btn-reset").onclick = () => {
+  ["f-keyword", "f-match"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("f-time-field").value = "created_at";
+  STATE.page = 1;
+  MF.reset();
+};
+document.getElementById("btn-export").onclick = () => {
+  window.open(`/api/supplier-costs/export?${queryStr()}`);
+  toast("导出文件生成中…", "info");
+};
+document.getElementById("f-keyword").addEventListener("keydown", e => {
+  if (e.key === "Enter") { STATE.page = 1; load(); }
+});
+load();
+</script>
+</body>
+</html>

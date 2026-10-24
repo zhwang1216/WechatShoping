@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px 16px; }
+  .login-card { width: 380px; max-width: 100%; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 32px 28px; box-shadow: 0 4px 16px rgba(0,0,0,.06); }
+  .login-card .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; justify-content: center; margin-bottom: 6px; }
+  .login-card .sub { text-align: center; color: var(--text-light); font-size: 12px; margin-bottom: 20px; }
+  .login-form { display: flex; flex-direction: column; gap: 14px; }
+  .login-form label { font-size: 12px; color: var(--text-light); display: block; margin-bottom: 4px; }
+  .login-form input { width: 100%; height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; font-size: 14px; box-sizing: border-box; }
+  .login-form input:focus { outline: none; border-color: var(--primary); }
+  #login-error { display: none; background: #fef2f2; color: var(--danger); border-radius: 6px; padding: 10px 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+  #login-btn { height: 44px; font-size: 14px; }
+  .register-link { text-align: center; font-size: 13px; margin-top: 14px; }
+  .register-link a { color: var(--primary); }
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand"><span class="logo">微</span>微信小店对账与利润核算系统</div>
+    <div class="sub">请使用账号登录</div>
+    <form class="login-form" id="login-form">
+      <div>
+        <label for="username">账号</label>
+        <input id="username" name="username" autocomplete="username" autofocus placeholder="请输入账号">
+      </div>
+      <div>
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码">
+      </div>
+      <div id="login-error"></div>
+      <button class="btn" id="login-btn" type="submit">登 录</button>
+    </form>
+    <div class="register-link">还没有账号？<a href="/register">立即注册</a></div>
+  </div>
+</div>
+
+<script src="/static/api.js"></script>
+<script>
+const form = document.getElementById("login-form");
+const errBox = document.getElementById("login-error");
+const btn = document.getElementById("login-btn");
+
+setupPasswordToggle(document.getElementById("password"), "显示或隐藏登录密码");
+
+try {
+  const notice = sessionStorage.getItem("login_notice");
+  if (notice) {
+    sessionStorage.removeItem("login_notice");
+    errBox.textContent = notice;
+    errBox.style.background = "#f0fdf4";
+    errBox.style.color = "var(--success)";
+    errBox.style.display = "block";
+  }
+} catch (e) { /* sessionStorage 不可用时忽略 */ }
+
+form.addEventListener("submit", async e => {
+  e.preventDefault();
+  errBox.style.display = "none";
+  errBox.style.background = "#fef2f2";
+  errBox.style.color = "var(--danger)";
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  if (!username || !password) {
+    errBox.textContent = "请输入账号和密码";
+    errBox.style.display = "block";
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "登录中…";
+  try {
+    await API.post("/api/auth/login", { username, password });
+    location.href = "/dashboard";
+  } catch (ex) {
+    errBox.textContent = ex.message || "登录失败，请稍后重试";
+    errBox.style.display = "block";
+    btn.disabled = false;
+    btn.textContent = "登 录";
+  }
+});
+</script>
+</body>
+</html>

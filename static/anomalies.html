@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>异常处理 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard">经营总览</a>
+    <a href="/data-import">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details">退款明细</a>
+    <a href="/supplier-costs">供应商成本</a>
+    <a href="/reconciliation">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies" class="active">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create">创建用户</a>
+      <a href="/stores">店铺管理</a>
+      <a href="/users">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">异常记录处理</div>
+  <div class="page-desc">集中展示导入校验异常、对账异常（未匹配订单/金额差异/数量差异等）与利润风险。月份筛选按异常发现时间（记录生成时间）归属（左闭右开区间）；异常的解决请在对应业务页面操作（对账成本/利润核算），重跑后会自动关闭已修复的异常。</div>
+
+  <div id="month-filter"></div>
+  <div id="store-scope"></div>
+
+  <div class="stat-grid" id="stat-grid"></div>
+
+  <div class="card">
+    <div class="filter-grid">
+      <div class="filter-item"><label>关键词</label><input id="f-keyword" placeholder="异常信息/订单号/类型"></div>
+      <div class="filter-item"><label>处理状态</label>
+        <select id="f-status"><option value="">全部</option></select>
+      </div>
+      <div class="filter-item"><label>异常类型</label>
+        <select id="f-type"><option value="">全部</option></select>
+      </div>
+      <div class="filter-item"><label>级别</label>
+        <select id="f-severity"><option value="">全部</option></select>
+      </div>
+      <div class="filter-item"><label>订单号（精确）</label><input id="f-order-id" placeholder="输入完整订单号"></div>
+      <div class="filter-actions">
+        <button class="btn" id="btn-query">查询</button>
+        <button class="btn secondary" id="btn-reset">重置</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card table-card">
+    <div class="card-head"><h3 style="margin:0">异常记录列表</h3>
+      <div class="head-actions">
+        <span class="hint" id="table-hint"></span>
+        <button class="btn secondary" id="btn-export">导出当前筛选</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="anomaly-table">
+        <thead><tr>
+          <th>发现时间</th><th>异常类型</th><th>级别</th><th>状态</th>
+          <th>关联订单</th><th>异常信息</th><th>处理结果</th><th>批次</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="table-state"></div>
+    <div class="pager" id="pager"></div>
+  </div>
+</div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/month_filter.js"></script>
+<script src="/static/store_scope.js"></script>
+<script>
+const STATE = { page: 1, size: 50, options: null };
+
+const MF = new MonthFilter({
+  container: "month-filter",
+  timeLabel: "异常发现时间（记录生成时间）",
+  onChange: () => { STATE.page = 1; load(); },
+});
+
+const SS = new StoreScope({
+  container: "store-scope",
+  onChange: () => { STATE.page = 1; load(); },
+});
+
+const SEVERITY_META = { high: ["高", "red"], medium: ["中", "orange"], low: ["低", "gray"] };
+const STATUS_META = { pending_review: ["待处理", "red"], resolved: ["已解决", "green"] };
+
+function sevBadge(s) {
+  const [label, color] = SEVERITY_META[s] || [s || "—", "gray"];
+  return `<span class="badge ${color}">${esc(label)}</span>`;
+}
+function stBadge(s) {
+  const [label, color] = STATUS_META[s] || [s || "—", "gray"];
+  return `<span class="badge ${color}">${esc(label)}</span>`;
+}
+
+function queryStr() {
+  const p = new URLSearchParams();
+  p.set("page", STATE.page); p.set("page_size", STATE.size);
+  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
+  SS.appendTo(p);
+  const v = id => document.getElementById(id).value.trim();
+  if (v("f-keyword")) p.set("keyword", v("f-keyword"));
+  if (v("f-status")) p.set("status", v("f-status"));
+  if (v("f-type")) p.set("exception_type", v("f-type"));
+  if (v("f-severity")) p.set("severity", v("f-severity"));
+  if (v("f-order-id")) p.set("order_id", v("f-order-id"));
+  return p.toString();
+}
+
+async function load() {
+  const state = document.getElementById("table-state");
+  const tbody = document.querySelector("#anomaly-table tbody");
+  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  tbody.innerHTML = "";
+  try {
+    const data = await API.get(`/api/anomalies?${queryStr()}`);
+    renderStats(data.statistics);
+    state.innerHTML = "";
+    if (!data.anomalies.length) {
+      state.innerHTML = `<div class="empty-state"><div class="icon">✅</div>当前筛选（${esc(MF.getLabel())}）内没有异常记录<br><span style="font-size:12px">可切换月份或选择「全部」查看历史异常</span></div>`;
+    } else {
+      tbody.innerHTML = data.anomalies.map(a => {
+        const res = a.resolution || {};
+        const resText = typeof res === "object" ? (res.note || res.status || "—") : String(res || "—");
+        return `<tr>
+          <td>${fmtTime(a.created_at)}</td>
+          <td><span class="badge gray">${esc(a.exception_type)}</span></td>
+          <td>${sevBadge(a.severity)}</td>
+          <td>${stBadge(a.status)}</td>
+          <td>${a.order_id ? esc(a.order_id) : "—"}</td>
+          <td style="max-width:320px;white-space:normal" title="${esc(a.message || "")}">${esc(a.message || "—")}</td>
+          <td style="max-width:180px;white-space:normal;font-size:12px">${esc(resText)}</td>
+          <td style="font-size:12px" title="${esc(a.batch_id || "")}${a.reconciliation_id ? " / " + esc(a.reconciliation_id) : ""}">${esc((a.batch_id || a.reconciliation_id || "—").slice(0, 12))}…</td>
+        </tr>`;
+      }).join("");
+    }
+    document.getElementById("table-hint").textContent = data.total ? `第 ${data.page}/${data.pages} 页` : "";
+    renderPager(document.getElementById("pager"), data, {
+      onPage: p => { STATE.page = p; load(); },
+      onSize: s => { STATE.size = s; STATE.page = 1; load(); },
+    });
+  } catch (e) {
+    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败，请稍后重试")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
+    renderStats(null);
+  }
+}
+
+function renderStats(s) {
+  const el = document.getElementById("stat-grid");
+  if (!s) { el.innerHTML = ""; return; }
+  el.innerHTML = [
+    ["异常总数", s.anomaly_count, ""],
+    ["待处理", s.pending_count, s.pending_count ? "danger" : "success"],
+    ["已解决", s.resolved_count, "success"],
+    ["高危异常", s.high_severity_count, s.high_severity_count ? "warn" : ""],
+  ].map(([l, v, c]) => `<div class="stat-item"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("")
+    + `<div style="grid-column:1/-1;font-size:12px;color:var(--text-light)">时间口径：异常发现时间（记录生成时间 created_at）。</div>`;
+}
+
+async function loadOptions() {
+  try {
+    STATE.options = await API.get("/api/anomalies/options");
+    const st = document.getElementById("f-status");
+    const tp = document.getElementById("f-type");
+    const sv = document.getElementById("f-severity");
+    st.innerHTML += Object.entries(STATE.options.status)
+      .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+    tp.innerHTML += Object.entries(STATE.options.exception_types)
+      .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+    sv.innerHTML += Object.entries(STATE.options.severity)
+      .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  } catch (e) { /* 忽略 */ }
+}
+
+document.getElementById("btn-query").onclick = () => { STATE.page = 1; load(); };
+document.getElementById("btn-reset").onclick = () => {
+  ["f-keyword", "f-status", "f-type", "f-severity", "f-order-id"].forEach(id =>
+    document.getElementById(id).value = "");
+  STATE.page = 1;
+  MF.reset();
+};
+document.getElementById("btn-export").onclick = () => {
+  window.open(`/api/anomalies/export?${queryStr()}`);
+  toast("导出文件生成中…", "info");
+};
+["f-keyword", "f-order-id"].forEach(id =>
+  document.getElementById(id).addEventListener("keydown", e => { if (e.key === "Enter") { STATE.page = 1; load(); } }));
+document.querySelector(".filter-grid").addEventListener("change", e => {
+  if (e.target.matches("select")) { STATE.page = 1; load(); }
+});
+
+loadOptions().then(load);
+</script>
+</body>
+</html>

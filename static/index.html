@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>数据导入 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard">经营总览</a>
+    <a href="/data-import" class="active">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details">退款明细</a>
+    <a href="/supplier-costs">供应商成本</a>
+    <a href="/reconciliation">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create">创建用户</a>
+      <a href="/stores">店铺管理</a>
+      <a href="/users">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+    <span class="meta" id="nav-meta"></span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">Excel 数据导入</div>
+  <div class="page-desc">上传微信小店订单 Excel 或供应商/物流成本 Excel，预览确认后写入本地 JSON 数据。</div>
+  <div class="declare-banner">
+    口径声明：本系统计算的是经营贡献利润；未导入广告推广、达人佣金、运费险、赔付、人工、仓储、税费等数据时，不代表完整会计净利润。
+  </div>
+
+  <div class="card">
+    <h3>上传文件（.xlsx，仅支持 Excel 2007+ 格式）</h3>
+    <div class="upload-grid">
+      <div>
+        <div class="upload-zone" id="zone-wechat">
+          <div class="icon">📄</div>
+          <div><b>微信小店订单 Excel</b></div>
+          <div style="font-size:12px;margin-top:4px">订单号 / 下单时间 / 订单状态 / 实收金额 / 退款金额 …</div>
+        </div>
+        <input type="file" id="file-wechat" accept=".xlsx" hidden>
+      </div>
+      <div>
+        <div class="upload-zone" id="zone-supplier">
+          <div class="icon">🚚</div>
+          <div><b>供应商及物流成本 Excel</b></div>
+          <div style="font-size:12px;margin-top:4px">主订单编号 / 总金额 / 成本 / 快递费 / 平台补贴 …</div>
+        </div>
+        <input type="file" id="file-supplier" accept=".xlsx" hidden>
+      </div>
+    </div>
+  </div>
+
+  <div id="month-filter"></div>
+  <div id="store-scope"></div>
+
+  <div class="stat-grid" id="batch-stats"></div>
+
+  <div class="card table-card">
+    <div class="card-head"><h3 style="margin:0">导入批次</h3>
+      <div class="head-actions">
+        <button class="btn secondary" id="btn-refresh-batches">刷新</button>
+      </div>
+    </div>
+    <div class="filter-grid">
+      <div class="filter-item"><label>批次/文件名关键词</label><input id="f-keyword" placeholder="批次号或文件名包含"></div>
+      <div class="filter-item"><label>数据类型</label>
+        <select id="f-source">
+          <option value="">全部</option>
+          <option value="wechat_orders">微信订单</option>
+          <option value="supplier_cost">供应商成本</option>
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button class="btn" id="btn-query-batches">查询</button>
+        <button class="btn secondary" id="btn-reset-batches">重置</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="batch-table">
+        <thead><tr>
+          <th>批次号</th><th>类型</th><th>文件名</th><th id="th-store" style="display:none">所属店铺</th><th>导入时间</th><th>状态</th>
+          <th class="num">总行</th><th class="num">成功</th><th class="num">更新</th>
+          <th class="num">跳过</th><th class="num">重复</th><th class="num">失败</th><th class="col-op">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="batch-state"></div>
+    <div class="pager" id="batch-pager"></div>
+  </div>
+</div>
+
+<!-- 预览/确认模态 -->
+<div class="modal-mask" id="preview-modal">
+  <div class="modal">
+    <div class="modal-head"><h3>导入预览</h3><button class="modal-close" onclick="closePreview()">×</button></div>
+    <div class="modal-body">
+      <div class="detail-section">
+        <h4>文件信息</h4>
+        <div class="kv-grid" id="pv-file"></div>
+      </div>
+      <div class="detail-section">
+        <h4>字段映射（表头 → 标准字段）</h4>
+        <div class="tag-list" id="pv-mapping"></div>
+      </div>
+      <div class="detail-section">
+        <h4>预检统计</h4>
+        <div class="kv-grid" id="pv-stats"></div>
+      </div>
+      <div id="pv-hints"></div>
+      <div class="detail-section">
+        <h4>数据预览（前 20 行）</h4>
+        <div class="table-wrap" style="max-height:320px;overflow:auto">
+          <table id="pv-table"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div id="pv-sample-errors"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-right:auto">
+          <input type="checkbox" id="pv-force"> 强制重新导入（文件已导入过时）
+        </label>
+        <button class="btn secondary" onclick="closePreview()">取消</button>
+        <button class="btn" id="pv-confirm">确认导入</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 批次行查看模态 -->
+<div class="modal-mask" id="rows-modal">
+  <div class="modal">
+    <div class="modal-head"><h3 id="rows-title">批次明细</h3><button class="modal-close" onclick="document.getElementById('rows-modal').classList.remove('show')">×</button></div>
+    <div class="modal-body">
+      <div class="filter-bar" style="margin-bottom:12px">
+        <div class="filter-item"><label>校验状态</label>
+          <select id="rows-status">
+            <option value="">全部</option><option value="passed">通过</option>
+            <option value="warning">警告</option><option value="error">错误</option>
+          </select>
+        </div>
+        <button class="btn secondary" id="rows-refresh">查询</button>
+        <button class="btn secondary" id="rows-export">导出异常清单</button>
+      </div>
+      <div class="table-wrap" style="max-height:420px;overflow:auto">
+        <table id="rows-table">
+          <thead><tr><th>行号</th><th>校验状态</th><th>错误/警告</th><th>原始数据</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 批次撤销预览/确认模态（管理员） -->
+<div class="modal-mask" id="revoke-modal">
+  <div class="modal">
+    <div class="modal-head"><h3 id="revoke-title">撤销导入批次</h3><button class="modal-close" onclick="closeRevoke()">×</button></div>
+    <div class="modal-body">
+      <div class="detail-section">
+        <h4>批次信息</h4>
+        <div class="kv-grid" id="rv-batch"></div>
+      </div>
+      <div class="detail-section">
+        <h4>撤销影响（将删除以下数据）</h4>
+        <div class="kv-grid" id="rv-impact"></div>
+      </div>
+      <div class="hint-banner" style="background:#fef2f2;border-color:#fecaca;color:#b91c1c">
+        ⚠ 危险操作：撤销前系统会自动创建整店备份；确认后该批次创建的订单/成本/退款/原始记录/异常将被删除，
+        关联的对账与利润结果将被清除并按月自动重算，该批次历史记录一并移除。
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+        <button class="btn secondary" onclick="closeRevoke()">取消</button>
+        <button class="btn danger" id="rv-confirm">我已了解影响，确认撤销</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/month_filter.js"></script>
+<script src="/static/store_scope.js"></script>
+<script src="/static/modal.js"></script>
+<script>
+/* 导入店铺选择弹窗 + 上传任务状态机（每次任务重建，不沿用历史选择） */
+const IMPORT_API_PATHS = {
+  wechat_orders: "/api/import/wechat-orders",
+  supplier_cost: "/api/import/supplier-costs",
+};
+const IMPORT_CONFIRM_PATH = "/api/import/confirm";
+const STORES_API_PATH = "/api/stores";
+const BATCHES_API_PATH = "/api/import/batches";
+
+let pendingPreview = null;
+let IS_ADMIN = false;
+let uploadTask = null;   /* { type, apiPath, store: {store_id,name,owner_user_id,owner_username} } */
+let pendingRevoke = null;
+
+const BATCH_STATE = { page: 1, size: 20 };
+
+const MF = new MonthFilter({
+  container: "month-filter",
+  timeLabel: "导入时间",
+  onChange: () => { BATCH_STATE.page = 1; loadBatches(); },
+});
+
+const SS = new StoreScope({
+  container: "store-scope",
+  onChange: () => { BATCH_STATE.page = 1; loadBatches(); },
+});
+
+(async () => {
+  await SS.ready;
+  IS_ADMIN = SS.admin;
+})();
+
+function batchQueryStr() {
+  const p = new URLSearchParams();
+  p.set("page", BATCH_STATE.page); p.set("page_size", BATCH_STATE.size);
+  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
+  SS.appendTo(p);
+  const v = id => document.getElementById(id).value.trim();
+  if (v("f-keyword")) p.set("keyword", v("f-keyword"));
+  if (v("f-source")) p.set("source_type", v("f-source"));
+  return p.toString();
+}
+
+async function loadMeta() {
+  try {
+    const h = await API.get("/api/health");
+    document.getElementById("nav-meta").textContent =
+      `${h.service} v${h.version} · ${h.platform}`;
+  } catch (e) { /* 忽略 */ }
+}
+
+/* 上传店铺选择弹窗：每次打开实时拉取有效店铺，默认不选中；确认后写入 uploadTask 并打开文件选择器 */
+async function openStorePicker(taskType) {
+  uploadTask = { type: taskType, apiPath: IMPORT_API_PATHS[taskType], store: null };
+  let selected = null;
+  let stores = [];
+  const fieldErr = (text) => {
+    const el = document.getElementById("sp-err");
+    if (el) { el.textContent = text || ""; el.style.display = text ? "block" : "none"; }
+  };
+  const syncConfirmBtn = () => {
+    const btn = document.getElementById("um-act-1");
+    if (btn) btn.disabled = !selected;
+    const info = document.getElementById("sp-selected");
+    if (info) {
+      info.style.display = selected ? "flex" : "none";
+      info.innerHTML = selected
+        ? `<span class="k">已选店铺</span><span class="v"><b>${esc(selected.name)}</b> · 归属成员：${esc(selected.owner_username || "—")}</span>`
+        : "";
+    }
+  };
+  const renderList = (keyword) => {
+    const kw = (keyword || "").trim().toLowerCase();
+    const rows = stores.filter(s => !kw
+      || (s.name || "").toLowerCase().includes(kw)
+      || (s.owner_username || "").toLowerCase().includes(kw));
+    document.getElementById("sp-list").innerHTML = rows.length ? rows.map(s => `
+      <label class="mp-item">
+        <input type="radio" name="sp-store" value="${esc(s.store_id)}">
+        <span class="mp-name"><b>${esc(s.name)}</b></span>
+        <span class="mp-id">${esc(s.store_id)}</span>
+        <span class="mp-meta">归属成员：${esc(s.owner_username || "—")}</span>
+      </label>`).join("")
+      : `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px">无匹配店铺</div>`;
+    document.querySelectorAll('#sp-list input[name="sp-store"]').forEach(r => {
+      r.onchange = () => {
+        selected = stores.find(s => s.store_id === r.value) || null;
+        document.querySelectorAll("#sp-list .mp-item").forEach(item =>
+          item.classList.toggle("picked", item.contains(r)));
+        fieldErr("");
+        syncConfirmBtn();
+      };
+    });
+  };
+  const loadStores = async () => {
+    const listEl = document.getElementById("sp-list");
+    listEl.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载店铺列表…</div>`;
+    try {
+      const data = await API.get(STORES_API_PATH);
+      stores = (data && data.stores) || [];
+      if (!stores.length) {
+        listEl.innerHTML = `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px;line-height:1.8">暂无可用店铺——当前账号没有可导入数据的有效店铺，请联系管理员处理</div>`;
+        syncConfirmBtn();
+        return;
+      }
+      selected = null;
+      renderList("");
+      syncConfirmBtn();
+    } catch (e) {
+      listEl.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "店铺列表加载失败")}</div><button class="btn secondary" id="sp-retry">重试</button></div>`;
+      const retryBtn = document.getElementById("sp-retry");
+      if (retryBtn) retryBtn.onclick = loadStores;
+    }
+  };
+  openModal({
+    title: "选择导入店铺",
+    width: 640,
+    bodyHtml: `
+      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-bottom:10px">请选择本次导入数据所属的店铺。确认后才能选择文件并继续导入。</div>
+      <div><label>搜索店铺</label>
+        <input id="sp-search" placeholder="搜索店铺名称 / 归属成员" autocomplete="off"></div>
+      <div style="margin-top:10px"><label>选择店铺（必选，同名店铺凭店铺 ID 区分）</label>
+        <div class="member-pick-list" id="sp-list"></div>
+        <span class="field-err" id="sp-err" style="display:none"></span></div>
+      <div class="store-info-bar sp-selected" id="sp-selected" style="display:none;margin-top:12px"></div>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "确认并选择文件", kind: "primary", disabled: true, onClick: () => {
+          if (!selected) {
+            fieldErr("请先选择目标店铺");
+            return false;
+          }
+          uploadTask.store = {
+            store_id: selected.store_id, name: selected.name,
+            owner_user_id: selected.owner_user_id,
+            owner_username: selected.owner_username,
+          };
+          const inputId = taskType === "wechat_orders" ? "file-wechat" : "file-supplier";
+          const input = document.getElementById(inputId);
+          if (input) input.click();
+          return true;
+        } },
+    ],
+    onClose: () => { if (!uploadTask || !uploadTask.store) uploadTask = null; },
+  });
+  document.getElementById("sp-search").oninput = e => renderList(e.target.value);
+  await loadStores();
+}
+
+function bindUpload(zoneId, inputId, taskType) {
+  const zone = document.getElementById(zoneId);
+  const input = document.getElementById(inputId);
+  zone.onclick = () => openStorePicker(taskType);
+  zone.ondragover = e => { e.preventDefault(); zone.classList.add("drag"); };
+  zone.ondragleave = () => zone.classList.remove("drag");
+  zone.ondrop = e => {
+    e.preventDefault(); zone.classList.remove("drag");
+    /* 拖拽路径同样先弹窗选店，不保留拖入文件 */
+    openStorePicker(taskType);
+  };
+  input.onchange = () => {
+    if (input.files.length && uploadTask && uploadTask.store) doUpload(input.files[0]);
+    input.value = "";
+  };
+}
+
+async function doUpload(file) {
+  if (!file.name.toLowerCase().endsWith(".xlsx")) { toast("仅支持 .xlsx 文件", "error"); return; }
+  if (!uploadTask || !uploadTask.store) {
+    toast("请先选择目标店铺", "error", 4000);
+    return;
+  }
+  toast(`正在解析 ${file.name} …`, "info", 1500);
+  try {
+    const target = `?store_id=${encodeURIComponent(uploadTask.store.store_id)}`;
+    const data = await API.upload(uploadTask.apiPath + target, file);
+    pendingPreview = data;
+    showPreview(data);
+  } catch (e) {
+    toast(e.message || "上传失败", "error", 5000);
+    if (e.data && e.data.missing_fields) {
+      toast(`缺失字段：${e.data.missing_fields.join("、")}`, "error", 6000);
+    }
+  }
+}
+
+function showPreview(p) {
+  document.getElementById("pv-file").innerHTML = [
+    ["目标店铺", p.target_store_name],
+    ["目标店铺 ID", p.target_store_id],
+    ["归属成员", p.target_owner_username],
+    ["文件名", p.file_name], ["数据类型", p.source_type === "wechat_orders" ? "微信订单" : "供应商成本"],
+    ["工作表", `${p.selected_sheet}（表头第 ${p.header_row} 行）`],
+    ["文件大小", `${(p.file_size / 1024).toFixed(1)} KB`], ["文件摘要", p.file_hash.slice(0, 16) + "…"],
+  ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${esc(v ?? "—")}</div></div>`).join("");
+
+  const mapped = new Set(Object.values(p.mapping || {}));
+  document.getElementById("pv-mapping").innerHTML = Object.entries(p.mapping || {})
+    .map(([h, c]) => `<span class="tag mapped">${esc(h)} → ${esc(c)}</span>`).join("")
+    + (p.columns || []).filter(c => c && !Object.keys(p.mapping).includes(c))
+      .map(c => `<span class="tag">${esc(c)}（未映射）</span>`).join("");
+
+  const pc = p.precheck || {};
+  document.getElementById("pv-stats").innerHTML = [
+    ["总行数", pc.total_rows], ["可导入", `<span style="color:var(--success)">${pc.success_rows}</span>`],
+    ["更新", pc.updated_rows], ["文件内重复", pc.duplicate_rows],
+    ["跳过空行", pc.skipped_rows], ["失败行", `<span style="color:var(--danger)">${pc.error_rows}</span>`],
+    ["警告行", `<span style="color:var(--warning)">${pc.warning_rows}</span>`],
+  ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${v ?? 0}</div></div>`).join("");
+
+  const hints = [];
+  if (p.duplicate_file) hints.push(`<div class="hint-banner">⚠ 该文件已导入过（批次 ${esc(p.duplicate_file.batch_id)}），确认导入需勾选"强制重新导入"。</div>`);
+  if (p.merged_cells_warning) hints.push(`<div class="hint-banner">⚠ ${esc(p.merged_cells_warning)}</div>`);
+  (p.granularity_hints || []).forEach(h => hints.push(`<div class="hint-banner">${esc(h)}</div>`));
+  document.getElementById("pv-hints").innerHTML = hints.join("");
+
+  const cols = Object.keys((p.preview_rows || [])[0]?.cells || {});
+  if (!cols.length) {
+    const first = (p.preview_rows || []).find(r => !r.empty);
+    if (first) Object.keys(first.cells).forEach(c => cols.push(c));
+  }
+  document.querySelector("#pv-table thead").innerHTML = "<tr><th>#</th>" + cols.map(c => `<th>${esc(c)}</th>`).join("") + "</tr>";
+  document.querySelector("#pv-table tbody").innerHTML = (p.preview_rows || []).map(r =>
+    `<tr><td>${r.row_number}</td>${cols.map(c => `<td>${esc((r.cells || {})[c] ?? "")}</td>`).join("")}</tr>`
+  ).join("") || `<tr><td colspan="${cols.length + 1}" style="text-align:center;color:var(--text-light)">无数据行</td></tr>`;
+
+  document.getElementById("pv-sample-errors").innerHTML = (p.sample_errors || []).length
+    ? `<div class="hint-banner">失败行示例：${p.sample_errors.map(e => `第${e.row_number}行 ${esc(e.messages.join("；"))}`).join("<br>")}${p.precheck.error_rows > p.sample_errors.length ? " …" : ""}</div>`
+    : "";
+
+  document.getElementById("pv-force").checked = false;
+  document.getElementById("pv-force").parentElement.style.display = p.duplicate_file ? "" : "none";
+  document.getElementById("preview-modal").classList.add("show");
+}
+
+function closePreview() {
+  document.getElementById("preview-modal").classList.remove("show");
+  pendingPreview = null;
+}
+
+document.getElementById("pv-confirm").onclick = async function () {
+  if (!pendingPreview) return;
+  this.disabled = true; this.classList.add("loading");
+  try {
+    const body = {
+      upload_id: pendingPreview.upload_id,
+      force: document.getElementById("pv-force").checked,
+      target_store_id: pendingPreview.target_store_id,
+    };
+    const result = await API.post(IMPORT_CONFIRM_PATH, body);
+    const s = result.statistics;
+    toast(`导入完成：成功 ${s.success_rows}，更新 ${s.updated_rows}，跳过 ${s.skipped_rows}，重复 ${s.duplicate_rows}，失败 ${s.error_rows}`, s.error_rows ? "warn" : "success", 5000);
+    closePreview();
+    loadBatches();
+  } catch (e) {
+    toast(e.message || "导入失败", "error", 6000);
+  } finally {
+    this.disabled = false; this.classList.remove("loading");
+  }
+};
+
+async function loadBatches() {
+  const state = document.getElementById("batch-state");
+  const tbody = document.querySelector("#batch-table tbody");
+  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  tbody.innerHTML = "";
+  try {
+    const data = await API.get(`${BATCHES_API_PATH}?${batchQueryStr()}`);
+    renderBatchStats(data.statistics);
+    state.innerHTML = "";
+    if (!data.batches.length) {
+      state.innerHTML = `<div class="empty-state"><div class="icon">📥</div>当前筛选（${esc(MF.getLabel())}）内暂无导入批次<br><span style="font-size:12px">可切换月份或选择「全部」；或先上传 Excel 文件</span></div>`;
+      renderPager(document.getElementById("batch-pager"), data, {
+        onPage: p => { BATCH_STATE.page = p; loadBatches(); },
+        onSize: s => { BATCH_STATE.size = s; BATCH_STATE.page = 1; loadBatches(); },
+      });
+      return;
+    }
+    tbody.innerHTML = data.batches.map(b => {
+      const s = b.statistics || {};
+      const st = { success: ["成功", "green"], partial_success: ["部分成功", "orange"], failed: ["失败", "red"] }[b.status] || [b.status, "gray"];
+      const storeCell = SS.multi ? `<td>${esc(b.store_name || "—")}</td>` : "";
+      const adminOps = IS_ADMIN ? `
+             <button class="link-btn" onclick="revokeBatch('${esc(b.batch_id)}')">撤销</button>
+             <button class="link-btn" style="color:var(--danger)" onclick="deleteBatchHistory('${esc(b.batch_id)}')">删历史</button>` : "";
+      return `<tr>
+        <td>${esc(b.batch_id)}</td>
+        <td>${b.source_type === "wechat_orders" ? "微信订单" : "供应商成本"}</td>
+        <td>${esc(b.file_name)}</td>
+        ${storeCell}
+        <td>${esc(b.imported_at)}</td>
+        <td><span class="badge ${st[1]}">${st[0]}</span></td>
+        <td class="num">${s.total_rows ?? 0}</td><td class="num">${s.success_rows ?? 0}</td>
+        <td class="num">${s.updated_rows ?? 0}</td><td class="num">${s.skipped_rows ?? 0}</td>
+        <td class="num">${s.duplicate_rows ?? 0}</td><td class="num">${s.error_rows ?? 0}</td>
+        <td class="col-op"><button class="link-btn" onclick="showRows('${esc(b.batch_id)}')">明细</button>
+             <button class="link-btn" onclick="exportErrors('${esc(b.batch_id)}')">异常清单</button>${adminOps}</td>
+      </tr>`;
+    }).join("");
+    document.getElementById("th-store").style.display = SS.multi ? "" : "none";
+    renderPager(document.getElementById("batch-pager"), data, {
+      onPage: p => { BATCH_STATE.page = p; loadBatches(); },
+      onSize: s => { BATCH_STATE.size = s; BATCH_STATE.page = 1; loadBatches(); },
+    });
+  } catch (e) {
+    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div><button class="btn secondary" onclick="loadBatches()">重试</button></div>`;
+    renderBatchStats(null);
+  }
+}
+
+function renderBatchStats(s) {
+  const el = document.getElementById("batch-stats");
+  if (!s) { el.innerHTML = ""; return; }
+  el.innerHTML = [
+    ["批次数", s.batch_count, ""],
+    ["成功批次", s.success, "success"],
+    ["部分成功", s.partial_success, s.partial_success ? "warn" : ""],
+    ["失败批次", s.failed, s.failed ? "danger" : ""],
+    ["累计总行数", s.total_rows, ""],
+    ["累计失败行", s.error_rows, s.error_rows ? "warn" : ""],
+  ].map(([l, v, c]) => `<div class="stat-item"><div class="label">${l}</div><div class="value ${c}">${v ?? 0}</div></div>`).join("");
+}
+
+let currentRowsBatch = null;
+function showRows(batchId) {
+  currentRowsBatch = batchId;
+  document.getElementById("rows-title").textContent = `批次明细（${batchId}）`;
+  document.getElementById("rows-modal").classList.add("show");
+  loadRows();
+}
+async function loadRows() {
+  const status = document.getElementById("rows-status").value;
+  const tbody = document.querySelector("#rows-table tbody");
+  tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-light)">加载中…</td></tr>`;
+  try {
+    const q = `?page=1&size=100${status ? `&status=${status}` : ""}`;
+    const data = await API.get(`/api/import/batches/${currentRowsBatch}/rows${q}`);
+    tbody.innerHTML = data.rows.length ? data.rows.map(r => {
+      const v = r.validation || {};
+      const badge = { passed: ["通过", "green"], warning: ["警告", "orange"], error: ["错误", "red"] }[v.status] || [v.status, "gray"];
+      const msgs = (v.errors || []).concat(v.warnings || []).map(m => `${esc(m.type)}: ${esc(m.message)}`).join("<br>");
+      const raw = JSON.stringify(r.raw_fields);
+      return `<tr><td>${r.row_number}</td><td><span class="badge ${badge[1]}">${badge[0]}</span></td>
+        <td style="white-space:normal;max-width:340px">${msgs || "—"}</td>
+        <td style="white-space:normal;max-width:300px;font-size:12px;color:var(--text-light)">${esc(raw.length > 300 ? raw.slice(0, 300) + "…" : raw)}</td></tr>`;
+    }).join("") : `<tr><td colspan="4" style="text-align:center;color:var(--text-light)">无记录</td></tr>`;
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--danger)">${esc(e.message || "加载失败")}</td></tr>`;
+  }
+}
+function exportErrors(batchId) {
+  window.open(`${BATCHES_API_PATH}/${batchId}/errors/export`);
+  toast("异常清单导出中…", "info");
+}
+
+/* ---------- 导入批次管理（管理员）：删除历史 / 撤销批次 ---------- */
+const REVOKE_TARGET_LABELS = {
+  orders: "订单记录", supplier_costs: "供应商成本", refund_details: "退款明细",
+  raw_records: "原始行记录", anomalies: "异常记录",
+  import_records: "导入历史", reconciliation_results: "对账结果",
+  profit_statements: "利润结果",
+};
+
+async function deleteBatchHistory(batchId) {
+  confirmModal(
+    "删除导入历史",
+    `仅删除导入历史记录？批次 ${batchId} 的历史条目将被移除，“撤销批次”能力将随之失效，但该批次已写入的订单/成本等业务数据完全保留。确定继续？`,
+    () => doDeleteBatchHistory(batchId));
+}
+
+async function doDeleteBatchHistory(batchId) {
+  try {
+    const r = await API.post(`/api/import/batches/${batchId}/delete-history`, { confirm: true });
+    toast(`已删除导入历史（${r.removed.import_records ?? 1} 条）`, "success");
+    loadBatches();
+  } catch (e) {
+    toast(e.message || "删除失败", "error", 5000);
+  }
+}
+
+async function revokeBatch(batchId) {
+  document.getElementById("revoke-title").textContent = `撤销导入批次：${batchId}`;
+  document.getElementById("rv-batch").innerHTML = `<div class="loading-state"><div class="spinner"></div>加载影响预览…</div>`;
+  document.getElementById("rv-impact").innerHTML = "";
+  document.getElementById("revoke-modal").classList.add("show");
+  try {
+    const p = await API.get(`/api/import/batches/${batchId}/revoke-preview`);
+    pendingRevoke = { batchId, preview: p };
+    document.getElementById("rv-batch").innerHTML = [
+      ["所属店铺", p.store_name || "—"],
+      ["文件名", p.file_name || "—"],
+      ["数据类型", p.source_type === "wechat_orders" ? "微信订单" : "供应商成本"],
+      ["导入时间", p.imported_at || "—"],
+      ["导入人", p.imported_by || "—"],
+    ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join("");
+    const rows = Object.entries(p.counts || {})
+      .map(([k, n]) => [`${REVOKE_TARGET_LABELS[k] || k}`, n]);
+    rows.push(["受影响订单（去重）", p.affected_order_count]);
+    rows.push(["关联对账结果", p.linked_reconciliation_count]);
+    rows.push(["待重算月份", (p.affected_months || []).join("、") || "—"]);
+    document.getElementById("rv-impact").innerHTML = rows
+      .map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v" style="color:var(--danger)">${v}</div></div>`).join("");
+  } catch (e) {
+    document.getElementById("rv-batch").innerHTML =
+      `<div class="error-state"><div class="msg">${esc(e.message || "预览失败")}</div></div>`;
+  }
+}
+function closeRevoke() {
+  document.getElementById("revoke-modal").classList.remove("show");
+  pendingRevoke = null;
+}
+document.getElementById("rv-confirm").onclick = function () {
+  if (!pendingRevoke) return;
+  const { batchId, preview } = pendingRevoke;
+  const total = Object.values(preview.counts || {}).reduce((a, b) => a + b, 0);
+  confirmModal(
+    "最后确认",
+    `撤销批次 ${batchId}？将删除 ${total} 条业务记录、${preview.affected_order_count} 个受影响订单的关联结果，并按 ${(preview.affected_months || []).length} 个月份自动重算对账与利润。此操作不可恢复（已自动整店备份）。`,
+    () => doRevokeBatch(this, batchId));
+};
+
+async function doRevokeBatch(btn, batchId) {
+  btn.disabled = true; btn.classList.add("loading");
+  try {
+    const r = await API.post(`/api/import/batches/${batchId}/revoke`, { confirm: true });
+    const removed = Object.values(r.removed || {}).reduce((a, b) => a + b, 0);
+    toast(`批次已撤销：删除 ${removed} 条记录，重算 ${r.recalculated.length} 个月份`, "success", 6000);
+    closeRevoke();
+    loadBatches();
+  } catch (e) {
+    toast(e.message || "撤销失败（已自动回滚，数据保持原状）", "error", 7000);
+  } finally {
+    btn.disabled = false; btn.classList.remove("loading");
+  }
+}
+document.getElementById("rows-refresh").onclick = loadRows;
+document.getElementById("rows-status").onchange = loadRows;
+document.getElementById("rows-export").onclick = () => exportErrors(currentRowsBatch);
+document.getElementById("btn-refresh-batches").onclick = loadBatches;
+document.getElementById("btn-query-batches").onclick = () => { BATCH_STATE.page = 1; loadBatches(); };
+document.querySelector(".filter-grid").addEventListener("change", e => {
+  if (e.target.matches("select")) { BATCH_STATE.page = 1; loadBatches(); }
+});
+document.getElementById("btn-reset-batches").onclick = () => {
+  document.getElementById("f-keyword").value = "";
+  document.getElementById("f-source").value = "";
+  BATCH_STATE.page = 1;
+  MF.reset();
+};
+document.getElementById("f-keyword").addEventListener("keydown", e => {
+  if (e.key === "Enter") { BATCH_STATE.page = 1; loadBatches(); }
+});
+
+bindUpload("zone-wechat", "file-wechat", "wechat_orders");
+bindUpload("zone-supplier", "file-supplier", "supplier_cost");
+loadMeta();
+loadBatches();
+</script>
+</body>
+</html>

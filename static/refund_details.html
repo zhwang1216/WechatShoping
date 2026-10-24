@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>退款明细 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard">经营总览</a>
+    <a href="/data-import">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details" class="active">退款明细</a>
+    <a href="/supplier-costs">供应商成本</a>
+    <a href="/reconciliation">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create">创建用户</a>
+      <a href="/stores">店铺管理</a>
+      <a href="/users">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">退款明细（逐笔）</div>
+  <div class="page-desc">逐笔展示平台退款记录（与「退款订单」按订单去重视图互补）。月份筛选默认按退款时间归属（左闭右开区间）；可切换按退款成功时间口径（仅统计成功退款笔次）。退款时间为空的记录在选择月份/日期时不会展示，可选择「全部」查看。</div>
+
+  <div id="month-filter"></div>
+  <div id="store-scope"></div>
+
+  <div class="stat-grid" id="stat-grid"></div>
+
+  <div class="card">
+    <div class="filter-grid">
+      <div class="filter-item"><label>订单号（精确）</label><input id="f-order-id" placeholder="输入完整订单号"></div>
+      <div class="filter-item"><label>订单号关键词</label><input id="f-keyword" placeholder="订单号包含"></div>
+      <div class="filter-item"><label>退款状态</label>
+        <select id="f-status">
+          <option value="">全部</option>
+          <option value="pending">退款处理中</option>
+          <option value="partial">部分退款</option>
+          <option value="full">全额退款</option>
+          <option value="closed">退款关闭</option>
+          <option value="unknown">未知/待核对</option>
+        </select>
+      </div>
+      <div class="filter-item"><label>时间口径</label>
+        <select id="f-time-field">
+          <option value="apply_time">退款时间（默认）</option>
+          <option value="success_time">退款成功时间（仅成功笔次）</option>
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button class="btn" id="btn-query">查询</button>
+        <button class="btn secondary" id="btn-reset">重置</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card table-card">
+    <div class="card-head"><h3 style="margin:0">退款明细列表</h3>
+      <div class="head-actions">
+        <span class="hint" id="table-hint"></span>
+        <button class="btn secondary" id="btn-export">导出当前筛选</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="detail-table">
+        <thead><tr>
+          <th>订单号</th><th>退款金额</th><th>退款状态</th><th>状态来源</th>
+          <th>退款时间</th><th>退款原因</th><th>原售后文本</th><th>粒度</th>
+          <th>源工作表/行号</th><th>导入批次</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="table-state"></div>
+    <div class="pager" id="pager"></div>
+  </div>
+</div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/month_filter.js"></script>
+<script src="/static/store_scope.js"></script>
+<script>
+const STATE = { page: 1, size: 50 };
+
+const MF = new MonthFilter({
+  container: "month-filter",
+  timeLabel: "退款时间",
+  onChange: () => { STATE.page = 1; load(); },
+});
+
+const SS = new StoreScope({
+  container: "store-scope",
+  onChange: () => { STATE.page = 1; load(); },
+});
+
+const TIME_FIELD_LABEL = {
+  apply_time: "退款时间（全部笔次）",
+  success_time: "退款成功时间（仅成功笔次）",
+};
+
+function queryStr() {
+  const p = new URLSearchParams();
+  p.set("page", STATE.page); p.set("page_size", STATE.size);
+  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
+  SS.appendTo(p);
+  const v = id => document.getElementById(id).value.trim();
+  if (v("f-order-id")) p.set("order_id", v("f-order-id"));
+  if (v("f-keyword")) p.set("keyword", v("f-keyword"));
+  if (v("f-status")) p.set("status", v("f-status"));
+  p.set("time_field", v("f-time-field"));
+  return p.toString();
+}
+
+async function load() {
+  const state = document.getElementById("table-state");
+  const tbody = document.querySelector("#detail-table tbody");
+  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  tbody.innerHTML = "";
+  try {
+    const data = await API.get(`/api/refund-details?${queryStr()}`);
+    renderStats(data.statistics);
+    state.innerHTML = "";
+    if (!data.details.length) {
+      state.innerHTML = `<div class="empty-state"><div class="icon">🧾</div>当前筛选（${esc(MF.getLabel())}）内没有退款明细<br><span style="font-size:12px">退款时间为空的记录需选择「全部」查看；或先在「数据导入」页导入微信订单 Excel</span></div>`;
+    } else {
+      tbody.innerHTML = data.details.map(d => `<tr>
+        <td>${esc(d.order_id)}</td>
+        <td class="num"><b>${fmtMoney(d.refund_amount)}</b></td>
+        <td>${refundStatusBadge(d.refund_status)}</td>
+        <td>${statusSourceBadge(d.status_source)}</td>
+        <td>${fmtTime(d.refund_time)}</td>
+        <td style="max-width:160px;white-space:normal">${esc(d.refund_reason || "—")}</td>
+        <td style="max-width:220px;white-space:normal;font-size:12px">${esc(d.raw_after_sale_text || "—")}</td>
+        <td>${d.refund_amount_granularity === "unknown" ? '<span class="badge orange">待核对</span>' : '<span class="badge gray">商品行级</span>'}</td>
+        <td style="font-size:12px">${esc(d.sheet_name || "—")} 第 ${d.row_number} 行</td>
+        <td style="font-size:12px" title="${esc(d.batch_id || "")}">${esc((d.batch_id || "—").slice(0, 14))}…</td>
+      </tr>`).join("");
+    }
+    document.getElementById("table-hint").textContent = data.total ? `第 ${data.page}/${data.pages} 页` : "";
+    renderPager(document.getElementById("pager"), data, {
+      onPage: p => { STATE.page = p; load(); },
+      onSize: s => { STATE.size = s; STATE.page = 1; load(); },
+    });
+  } catch (e) {
+    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败，请稍后重试")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
+    renderStats(null);
+  }
+}
+
+function renderStats(s) {
+  const el = document.getElementById("stat-grid");
+  if (!s) { el.innerHTML = ""; return; }
+  el.innerHTML = [
+    ["退款笔次", s.refund_detail_count, ""],
+    ["退款总金额", fmtMoneyYuan(s.total_refund_amount), "danger"],
+    ["成功退款金额", fmtMoneyYuan(s.success_refund_amount), "success"],
+    ["处理中金额", fmtMoneyYuan(s.pending_refund_amount), "warn"],
+    ["关闭金额", fmtMoneyYuan(s.closed_refund_amount), ""],
+  ].map(([l, v, c]) => `<div class="stat-item"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("")
+    + `<div style="grid-column:1/-1;font-size:12px;color:var(--text-light)">当前时间口径：${TIME_FIELD_LABEL[s.time_field] || s.time_field}。跨月退款（如 9 月下单、10 月退款）按退款时间归属到退款发生月份，不会漏记。</div>`;
+}
+
+document.getElementById("btn-query").onclick = () => { STATE.page = 1; load(); };
+document.querySelector(".filter-grid").addEventListener("change", e => {
+  if (e.target.matches("select")) { STATE.page = 1; load(); }
+});
+document.getElementById("btn-reset").onclick = () => {
+  ["f-order-id", "f-keyword", "f-status"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("f-time-field").value = "apply_time";
+  STATE.page = 1;
+  MF.reset();
+};
+document.getElementById("btn-export").onclick = () => {
+  window.open(`/api/refund-details/export?${queryStr()}`);
+  toast("导出文件生成中…", "info");
+};
+["f-order-id", "f-keyword"].forEach(id =>
+  document.getElementById(id).addEventListener("keydown", e => { if (e.key === "Enter") { STATE.page = 1; load(); } }));
+load();
+</script>
+</body>
+</html>

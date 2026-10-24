@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>店铺管理 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard">经营总览</a>
+    <a href="/data-import">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details">退款明细</a>
+    <a href="/supplier-costs">供应商成本</a>
+    <a href="/reconciliation">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group nav-group-current" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create">创建用户</a>
+      <a href="/stores" class="active">店铺管理</a>
+      <a href="/users">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">店铺管理<span class="page-help" id="store-help" tabindex="0"
+        title="每个店铺唯一归属一个普通成员（member），一个成员可拥有多个店铺，业务数据相互隔离；管理员账号不持有业务店铺。修改归属、停用与删除均自动备份，店铺 ID 与业务数据保持不变（删除除外，见各操作确认说明）。">?</span></div>
+  <div class="page-desc">管理店铺信息、归属成员及业务数据。</div>
+
+  <div class="stat-grid" id="store-stats">
+    <div class="stat-item"><div class="label">店铺总数</div><div class="value" id="stat-total">—</div></div>
+    <div class="stat-item"><div class="label">正常店铺</div><div class="value success" id="stat-active">—</div></div>
+    <div class="stat-item"><div class="label">已停用店铺</div><div class="value warn" id="stat-disabled">—</div></div>
+  </div>
+
+  <div class="card">
+    <div class="filter-grid">
+      <div class="filter-item"><label>店铺名称关键词</label><input id="f-store-name" placeholder="店铺名称包含"></div>
+      <div class="filter-item"><label>店铺 ID</label><input id="f-store-id" placeholder="精确或关键词包含"></div>
+      <div class="filter-item"><label>归属用户</label><input id="f-store-owner" placeholder="归属用户名或用户 ID"></div>
+      <div class="filter-item"><label>归属状态</label>
+        <select id="f-assignment">
+          <option value="">全部</option>
+          <option value="assigned">已归属</option>
+          <option value="unassigned">待分配</option>
+          <option value="admin_legacy">待迁移</option>
+        </select>
+      </div>
+      <div class="filter-item"><label>店铺状态</label>
+        <select id="f-status">
+          <option value="">全部</option>
+          <option value="active">正常</option>
+          <option value="disabled">停用</option>
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button class="btn" id="btn-query" type="button">查询</button>
+        <button class="btn secondary" id="btn-reset" type="button">重置</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card table-card">
+    <div class="card-head table-toolbar">
+      <h3 style="margin:0">店铺列表</h3>
+      <div class="toolbar-btns">
+        <button class="btn" id="btn-create-store" type="button">创建新店铺</button>
+        <button class="btn secondary" id="btn-migration-overview" type="button">迁移清点</button>
+      </div>
+    </div>
+    <div class="store-meta-line">
+      <span id="store-count">共 0 家店铺</span>
+      <span>修改归属、停用与删除均自动备份，店铺 ID 与业务数据保持不变</span>
+    </div>
+    <div class="table-wrap">
+      <table id="store-table">
+        <thead><tr>
+          <th>店铺 ID</th><th>店铺名称</th><th>状态</th><th>归属成员</th>
+          <th>业务数据概况</th><th>创建时间</th><th>操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="store-state"></div>
+    <div class="pager" id="store-pager"></div>
+  </div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/modal.js"></script>
+<script>
+const fmtDateTime = v => {
+  if (!v) return "—";
+  const s = String(v).replace("T", " ");
+  return s.length > 16 ? s.slice(0, 16) : s;
+};
+
+/* ==================== 店铺管理（管理视角：含待分配/待迁移店铺） ==================== */
+const OWNERSHIP_STATUS = {
+  assigned: ["已归属", "green"],
+  unassigned: ["待分配", "gray"],
+  admin_legacy: ["待迁移", "orange"],
+};
+
+const STORE_STATUS = {
+  active: ["正常", "green"],
+  disabled: ["停用", "gray"],
+};
+
+const STATE = { name: "", store_id: "", owner: "", assignment_status: "", status: "", page: 1, size: 20 };
+
+function syncFilter() {
+  STATE.name = document.getElementById("f-store-name").value.trim();
+  STATE.store_id = document.getElementById("f-store-id").value.trim();
+  STATE.owner = document.getElementById("f-store-owner").value.trim();
+  STATE.assignment_status = document.getElementById("f-assignment").value;
+  STATE.status = document.getElementById("f-status").value;
+}
+
+function queryStr() {
+  const p = new URLSearchParams();
+  if (STATE.name) p.set("name", STATE.name);
+  if (STATE.store_id) p.set("store_id", STATE.store_id);
+  if (STATE.owner) p.set("owner", STATE.owner);
+  if (STATE.assignment_status) p.set("assignment_status", STATE.assignment_status);
+  if (STATE.status) p.set("status", STATE.status);
+  p.set("page", STATE.page);
+  p.set("page_size", STATE.size);
+  return p.toString();
+}
+
+/* 顶部统计卡片：基于 /api/admin/all-stores 全量真实数据，不允许写死 */
+function buildStatCards(stores) {
+  let total = 0, active = 0, disabled = 0;
+  for (const s of (stores || [])) {
+    total++;
+    const st = s.status || "active";
+    if (st === "disabled") disabled++;
+    else active++;
+  }
+  document.getElementById("stat-total").textContent = total;
+  document.getElementById("stat-active").textContent = active;
+  document.getElementById("stat-disabled").textContent = disabled;
+}
+
+async function refreshStats() {
+  const els = ["stat-total", "stat-active", "stat-disabled"];
+  try {
+    const d = await API.get("/api/admin/all-stores?page=1&page_size=100000");
+    buildStatCards(d.stores || []);
+  } catch (e) {
+    els.forEach(id => { document.getElementById(id).textContent = "—"; });
+  }
+}
+
+/* 店铺 ID 复制（等宽展示 + 复制入口） */
+async function copyStoreId(storeId) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(storeId);
+      toast("店铺 ID 已复制", "success");
+      return;
+    }
+  } catch (e) { /* fallthrough */ }
+  toast(`店铺 ID：${storeId}`, "info", 4000);
+}
+
+/* 业务数据概况分项小块（真实后端 record_counts） */
+function renderRecordCounts(c) {
+  const items = [
+    ["订单", c.orders], ["成本", c.supplier_costs],
+    ["退款", c.refund_details], ["批次", c.import_records],
+  ];
+  return `<div class="record-counts">${items.map(([label, v]) => `
+    <span class="rc-item"><span class="rc-label">${label}</span><span class="rc-value">${v ?? 0}</span></span>`
+  ).join("")}</div>`;
+}
+
+/* 更多下拉菜单关闭 */
+function closeRowMenus() {
+  document.querySelectorAll(".dropdown-menu.open").forEach(m => m.classList.remove("open"));
+  document.querySelectorAll(".btn-more[aria-expanded='true']").forEach(b =>
+    b.setAttribute("aria-expanded", "false"));
+}
+onEscClose(closeRowMenus);
+document.addEventListener("click", e => {
+  if (!e.target.closest(".dropdown-menu") && !e.target.closest(".btn-more")) {
+    closeRowMenus();
+  }
+});
+
+/* 更多下拉菜单：按店铺状态机动态生成互斥操作 */
+function openRowMenu(storeId, anchorEl) {
+  closeRowMenus();
+  const store = CURRENT_STORES.find(x => x.store_id === storeId)
+    || { store_id: storeId, name: storeId, status: "active", assignment_status: "assigned" };
+  const menu = document.createElement("div");
+  menu.className = "dropdown-menu open";
+  const id = store.store_id, name = store.name;
+  const vs = store.status || "active";
+  const as = store.assignment_status || "assigned";
+  const items = [];
+  if (vs === "active") {
+    items.push({ label: "停用", onClick: () => changeStoreStatus(id, name, 'disable') });
+  } else if (vs === "disabled") {
+    items.push({ label: "启用", onClick: () => changeStoreStatus(id, name, 'enable') });
+  }
+  if (as !== "unassigned") {
+    items.push({ label: "标记待分配", onClick: () => markUnassigned(id, name) });
+  }
+  items.push({ label: "修改归属", onClick: () => openTransferOwnership(id, name) });
+  items.push({ label: "清除业务数据", onClick: () => clearStoreDataFlow(id, name) });
+  items.push({ label: "删除店铺", danger: true, onClick: () => deleteStoreFlow(id, name) });
+  menu.innerHTML = items.map(it =>
+    `<button type="button" class="dropdown-item${it.danger ? " danger" : ""}">${esc(it.label)}</button>`
+  ).join("");
+  anchorEl.parentNode.appendChild(menu);
+  anchorEl.setAttribute("aria-expanded", "true");
+  const rect = anchorEl.getBoundingClientRect();
+  const mrect = menu.getBoundingClientRect();
+  if (rect.bottom + mrect.height + 8 > window.innerHeight) {
+    menu.style.top = `-${mrect.height + 8}px`;
+  }
+  menu.querySelectorAll(".dropdown-item").forEach((btn, i) => {
+    btn.addEventListener("click", () => {
+      closeRowMenus();
+      items[i].onClick();
+    });
+  });
+}
+
+function rowOps(store) {
+  return `
+    <div class="store-ops" style="white-space:nowrap">
+      <button class="link-btn" onclick="viewStoreData('${esc(store.store_id)}')">查看</button>
+      <button class="link-btn" onclick="renameStore('${esc(store.store_id)}', '${esc(store.name)}')">编辑</button>
+      <span class="more-wrap">
+        <button class="btn-more" type="button" aria-expanded="false"
+                onclick="event.stopPropagation();openRowMenu('${esc(store.store_id)}', this)">更多 ▾</button>
+      </span>
+    </div>`;
+}
+
+let CURRENT_STORES = [];
+
+async function loadStores() {
+  const tbody = document.querySelector("#store-table tbody");
+  const state = document.getElementById("store-state");
+  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  tbody.innerHTML = "";
+  try {
+    const [listRes, allRes] = await Promise.allSettled([
+      API.get(`/api/admin/all-stores?${queryStr()}`),
+      API.get("/api/admin/all-stores?page=1&page_size=100000"),
+    ]);
+    if (listRes.status !== "fulfilled") throw listRes.reason;
+    const d = listRes.value;
+    if (allRes.status === "fulfilled") buildStatCards((allRes.value.stores || []));
+    const stores = d.stores || [];
+    CURRENT_STORES = stores;
+    state.innerHTML = "";
+    tbody.innerHTML = stores.map(s => {
+      const c = s.record_counts || {};
+      const st = s.assignment_status || "assigned";
+      const [stLabel, stColor] = OWNERSHIP_STATUS[st] || [st, "gray"];
+      const opStatus = s.status || "active";
+      const [opLabel, opColor] = STORE_STATUS[opStatus] || [opStatus, "gray"];
+      const ownerCell = st === "assigned"
+        ? `<div class="row">${esc(s.owner_username || "—")}</div>
+           <div style="font-family:monospace;font-size:11px;color:var(--text-light)">${esc(s.owner_user_id || "")}</div>`
+        : `<span class="badge ${stColor}">${stLabel}</span>` +
+          (st === "admin_legacy"
+            ? `<div style="font-size:11px;color:var(--text-light);margin-top:2px">${esc(s.owner_username || "")}（管理员遗留）</div>`
+            : (s.orphan
+              ? `<div style="font-size:11px;color:var(--text-light);margin-top:2px">孤儿店铺（原归属用户已删除）</div>`
+              : ""));
+      return `<tr>
+        <td class="store-id-cell">${esc(s.store_id)}
+          <button class="copy-id-btn" type="button" title="复制店铺 ID"
+                  onclick="copyStoreId('${esc(s.store_id)}')">⧉</button>
+        </td>
+        <td>${esc(s.name)}</td>
+        <td><span class="badge ${opColor}">${opLabel}</span></td>
+        <td>${ownerCell}</td>
+        <td>${renderRecordCounts(c)}</td>
+        <td style="white-space:nowrap">${fmtDateTime(s.created_at)}</td>
+        <td>${rowOps(s)}</td>
+      </tr>`;
+    }).join("") ||
+      `<tr><td colspan="7" style="text-align:center;color:var(--text-light)">暂无店铺：当前筛选条件下没有匹配店铺</td></tr>`;
+    document.getElementById("store-count").textContent =
+      `共 ${d.total} 家店铺 · 修改归属、停用与删除均自动备份，店铺 ID 与业务数据保持不变`;
+    const pages = Math.max(1, Math.ceil(d.total / d.page_size));
+    renderPager(document.getElementById("store-pager"), {
+      page: d.page, pages, total: d.total, size: d.page_size,
+    }, {
+      onPage: p => { STATE.page = p; loadStores(); },
+      onSize: s => { STATE.size = s; STATE.page = 1; loadStores(); },
+    });
+  } catch (e) {
+    state.innerHTML =
+      `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div><button class="btn secondary" onclick="loadStores()">重试</button></div>`;
+  }
+}
+
+document.getElementById("btn-query").onclick = () => { syncFilter(); STATE.page = 1; loadStores(); };
+document.getElementById("btn-reset").onclick = () => {
+  STATE.name = ""; STATE.store_id = ""; STATE.owner = ""; STATE.assignment_status = ""; STATE.status = ""; STATE.page = 1;
+  document.getElementById("f-store-name").value = "";
+  document.getElementById("f-store-id").value = "";
+  document.getElementById("f-store-owner").value = "";
+  document.getElementById("f-assignment").value = "";
+  document.getElementById("f-status").value = "";
+  loadStores();
+};
+document.getElementById("f-store-name").onkeydown = e => { if (e.key === "Enter") document.getElementById("btn-query").click(); };
+document.getElementById("f-store-id").onkeydown = e => { if (e.key === "Enter") document.getElementById("btn-query").click(); };
+document.getElementById("f-store-owner").onkeydown = e => { if (e.key === "Enter") document.getElementById("btn-query").click(); };
+
+/* ==================== 创建新店铺弹窗 ==================== */
+async function openCreateStore() {
+  let users;
+  try {
+    users = (await API.get("/api/users")).users || [];
+  } catch (e) {
+    toast(e.message || "获取成员清单失败", "error");
+    return;
+  }
+  const members = users.filter(u => u.role === "member");
+  let selected = null;
+  const fieldErr = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = text || ""; el.style.display = text ? "block" : "none"; }
+  };
+  const renderList = (keyword, listId) => {
+    const kw = (keyword || "").trim().toLowerCase();
+    const rows = members.filter(m => !kw || (m.username || "").toLowerCase().includes(kw));
+    document.getElementById(listId).innerHTML = rows.length ? rows.map(m => `
+      <label class="mp-item">
+        <input type="radio" name="cs-owner" value="${esc(m.user_id)}">
+        <span class="mp-name"><b>${esc(m.username)}</b></span>
+        <span class="mp-id">${esc(m.user_id)}</span>
+        <span>${m.status === "active" ? '<span class="badge green">启用</span>' : '<span class="badge red">停用</span>'}</span>
+        <span class="mp-meta">当前店铺：${esc((m.store_names || []).filter(Boolean).join("、") || "无")}</span>
+      </label>`).join("")
+      : `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px">无匹配成员</div>`;
+    document.querySelectorAll(`#${listId} input[name="cs-owner"]`).forEach(r => {
+      r.onchange = () => {
+        selected = members.find(m => m.user_id === r.value) || null;
+        fieldErr("cs-owner-err", "");
+      };
+    });
+  };
+  openModal({
+    title: "创建新店铺",
+    width: 640,
+    bodyHtml: `
+      <div class="form-grid">
+        <div>
+          <label>店铺名称（1-64 字符）</label>
+          <input id="cs-name" maxlength="64" placeholder="输入新店铺名称" autocomplete="off">
+          <span class="field-err" id="cs-name-err" style="display:none"></span>
+        </div>
+        <div>
+          <label>按用户名搜索归属成员</label>
+          <input id="cs-search" placeholder="输入用户名关键词过滤" autocomplete="off">
+        </div>
+        <div class="full">
+          <label>归属成员（必选，仅 member 角色可拥有店铺）</label>
+          <div class="member-pick-list" id="cs-list"></div>
+          <span class="field-err" id="cs-owner-err" style="display:none"></span>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-top:10px">
+        创建后店铺立即归属所选成员（一个成员可拥有多个店铺，数据相互隔离）；店铺 ID 由系统生成，业务数据目录同步初始化。
+      </div>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "创建店铺", kind: "primary", onClick: async () => {
+          const nameInput = document.getElementById("cs-name");
+          const name = nameInput.value.trim();
+          if (!name) {
+            fieldErr("cs-name-err", "店铺名称不能为空");
+            nameInput.focus();
+            return false;
+          }
+          if (!selected) {
+            fieldErr("cs-owner-err", "请选择归属成员（在上方列表中点选）");
+            return false;
+          }
+          const r = await API.post("/api/stores", { name, owner_user_id: selected.user_id });
+          toast(`店铺「${r.name}」创建成功，已归属 ${r.owner_username}`, "success");
+          closeModal();
+          loadStores();
+          refreshStats();
+        } },
+    ],
+  });
+  renderList("", "cs-list");
+  document.getElementById("cs-search").oninput = e => renderList(e.target.value, "cs-list");
+  document.getElementById("cs-name").oninput = () => fieldErr("cs-name-err", "");
+}
+document.getElementById("btn-create-store").onclick = openCreateStore;
+
+/* ==================== 编辑店铺信息（重命名）弹窗 ==================== */
+function renameStore(storeId, currentName) {
+  const fieldErr = (id, text) => {
+    const el = document.getElementById(id);
+    el.textContent = text || "";
+    el.style.display = text ? "block" : "none";
+  };
+  openModal({
+    title: "重命名店铺",
+    width: 420,
+    bodyHtml: `
+      <div style="font-size:13px;color:var(--text-light);margin-bottom:10px">
+        店铺 ID <b style="font-family:monospace">${esc(storeId)}</b> 保持不变，数据归属与历史关联不受影响，仅更新显示名称。
+      </div>
+      <div><label>新的店铺名称</label>
+        <input id="rn-input" value="${esc(currentName)}" maxlength="64" autocomplete="off">
+        <span class="field-err" id="rn-err" style="display:none"></span>
+      </div>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "保存", kind: "primary", onClick: async () => {
+          const input = document.getElementById("rn-input");
+          const name = input.value.trim();
+          if (!name) {
+            fieldErr("rn-err", "店铺名称不能为空");
+            input.focus();
+            return false;
+          }
+          const r = await API.post(`/api/stores/${storeId}/rename`, { name });
+          toast(`店铺已重命名：${r.old_name || currentName} → ${r.name}`, "success");
+          closeModal();
+          loadStores();
+        } },
+    ],
+  });
+  const input = document.getElementById("rn-input");
+  input.focus();
+  input.select();
+  input.oninput = () => fieldErr("rn-err", "");
+}
+
+/* ==================== 修改店铺归属弹窗（两步确认） ==================== */
+async function openTransferOwnership(storeId, storeName) {
+  let users;
+  try {
+    users = (await API.get("/api/users")).users || [];
+  } catch (e) {
+    toast(e.message || "获取成员清单失败", "error");
+    return;
+  }
+  // 仅列出有效的普通成员: member 角色 + 启用状态（管理员账号与停用成员不出现在候选列表）
+  const members = users.filter(u => u.role === "member" && u.status === "active");
+  const current = CURRENT_STORES.find(x => x.store_id === storeId) || {};
+  const currentOwnerText = current.owner_username
+    ? `${current.owner_username}（${current.owner_user_id || ""}）`
+    : (current.assignment_status === "unassigned" ? "待分配（无归属成员）"
+      : current.assignment_status === "admin_legacy" ? "管理员遗留" : "—");
+  let selected = null;
+  const renderList = (keyword) => {
+    const kw = (keyword || "").trim().toLowerCase();
+    const rows = members.filter(m => !kw || (m.username || "").toLowerCase().includes(kw));
+    const emptyHtml = members.length
+      ? `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px">无匹配成员</div>`
+      : `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px">暂无可用的普通成员（需先创建或启用普通成员账号），无法修改归属</div>`;
+    document.getElementById("to-list").innerHTML = rows.length ? rows.map(m => `
+      <label class="mp-item">
+        <input type="radio" name="to-target" value="${esc(m.user_id)}">
+        <span class="mp-name"><b>${esc(m.username)}</b></span>
+        <span class="mp-id">${esc(m.user_id)}</span>
+        <span class="mp-meta">当前店铺：${esc((m.store_names || []).filter(Boolean).join("、") || "无")}</span>
+      </label>`).join("") : emptyHtml;
+    document.querySelectorAll('#to-list input[name="to-target"]').forEach(r => {
+      r.onchange = () => {
+        selected = members.find(m => m.user_id === r.value) || null;
+        document.getElementById("to-next").disabled = !selected;
+      };
+    });
+  };
+  openModal({
+    title: `修改店铺归属 - ${storeName}`,
+    width: 600,
+    bodyHtml: `
+      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:10px">
+        <div>店铺名称：<b>${esc(storeName)}</b></div>
+        <div>店铺 ID：<span style="font-family:monospace;font-size:12px">${esc(storeId)}</span></div>
+        <div>当前归属成员：<b>${esc(currentOwnerText)}</b></div>
+      </div>
+      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-bottom:10px">
+        店铺 ID 与全部业务数据保持不变，仅变更归属成员；下方列表仅显示启用状态的普通成员，不包含管理员账号。
+      </div>
+      <div><label>按用户名搜索目标成员</label>
+        <input id="to-search" placeholder="输入用户名关键词过滤" autocomplete="off">
+        <span class="field-err" id="to-err" style="display:none"></span>
+      </div>
+      <div class="member-pick-list" id="to-list"></div>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "下一步：确认变更", kind: "primary", disabled: true, onClick: () => {
+          if (!selected) {
+            document.getElementById("to-err").textContent = "请选择新的归属成员";
+            document.getElementById("to-err").style.display = "block";
+            return false;
+          }
+          confirmTransferOwnership(storeId, storeName, selected);
+        } },
+    ],
+  });
+  renderList("");
+  document.getElementById("to-search").oninput = e => renderList(e.target.value);
+}
+
+/* 二次确认：完整展示店铺名/原归属/新归属三要素，取消不发请求 */
+function confirmTransferOwnership(storeId, storeName, target) {
+  openModal({
+    title: "确认修改店铺归属",
+    width: 560,
+    bodyHtml: `
+      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+        <div>店铺名称：<b>${esc(storeName)}</b>（<span style="font-family:monospace;font-size:12px">${esc(storeId)}</span>）</div>
+        <div id="ct-prev">原归属：读取中…</div>
+        <div>新归属：<b>${esc(target.username)}</b>（<span style="font-family:monospace;font-size:12px">${esc(target.user_id)}</span>）</div>
+      </div>
+      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-top:8px">
+        变更后：店铺 ID 与全部业务数据记录数保持不变；原归属成员的本店访问权限即时收回（会话吊销需重新登录），目标成员获得该店铺。
+      </div>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "确认变更归属", kind: "danger", onClick: async () => {
+          const r = await API.post(
+            `/api/stores/${storeId}/transfer-ownership`,
+            { target_user_id: target.user_id });
+          showTransferResult(r);
+        } },
+    ],
+  });
+  API.get("/api/admin/all-stores").then(d => {
+    const s = ((d.stores || []).find(x => x.store_id === storeId) || {});
+    const prev = s.owner_username
+      ? `${s.owner_username}（${s.owner_user_id}）`
+      : (s.assignment_status === "admin_legacy" ? "管理员遗留" : "待分配");
+    const el = document.getElementById("ct-prev");
+    if (el) el.innerHTML = `原归属：${esc(prev)}`;
+  }).catch(() => {
+    const el = document.getElementById("ct-prev");
+    if (el) el.textContent = "原归属：—";
+  });
+}
+
+/* 变更结果：前后归属对照 + 数据记录数不变说明；归属未变化时如实提示 */
+function showTransferResult(r) {
+  const prev = r.previous_owner
+    ? `${r.previous_owner.username}（${r.previous_owner.user_id}）` : "待分配/无归属";
+  const c = r.record_counts || {};
+  if (r.unchanged) {
+    openModal({
+      title: "归属成员未发生变化",
+      width: 520,
+      bodyHtml: `
+        <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+          <div>店铺：<b>${esc(r.store_name)}</b>（<span style="font-family:monospace;font-size:12px">${esc(r.store_id)}</span>）</div>
+          <div>当前归属成员：${esc(prev)}</div>
+        </div>
+        <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-top:8px">
+          所选成员与当前归属成员相同，未执行归属变更：店铺归属、业务数据与会话均保持原状。
+        </div>`,
+      actions: [
+        { text: "知道了", kind: "primary", onClick: async () => {
+            loadStores();
+            refreshStats();
+          } },
+      ],
+    });
+    return;
+  }
+  openModal({
+    title: "店铺归属已变更",
+    width: 560,
+    bodyHtml: `
+      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+        <div>店铺：<b>${esc(r.store_name)}</b>（<span style="font-family:monospace;font-size:12px">${esc(r.store_id)}</span>）</div>
+        <div>原归属：${esc(prev)}</div>
+        <div>新归属：<b>${esc(r.new_owner.username)}</b>（<span style="font-family:monospace;font-size:12px">${esc(r.new_owner.user_id)}</span>）</div>
+      </div>
+      <div style="font-size:12px;color:var(--success);line-height:1.7;margin-top:8px">
+        ✓ 业务数据完整保留（data_preserved=${r.data_preserved ? "true" : "false"}）：
+        订单 ${c.orders ?? 0} / 成本 ${c.supplier_costs ?? 0} / 退款明细 ${c.refund_details ?? 0} / 导入批次 ${c.import_records ?? 0} 条记录数不变；
+        变更前已自动创建备份，原归属成员会话已吊销。
+      </div>`,
+    actions: [
+      { text: "知道了", kind: "primary", onClick: async () => {
+          loadStores();
+          refreshStats();
+        } },
+    ],
+  });
+}
+
+/* ==================== 标记待分配弹窗 ==================== */
+function markUnassigned(storeId, storeName) {
+  let enabled = false;
+  const okBtnRef = () => document.getElementById("um-act-1");
+  const enable = () => {
+    enabled = true;
+    const btn = okBtnRef();
+    if (btn) btn.disabled = false;
+  };
+  openModal({
+    title: `标记店铺待分配 - ${storeName}`,
+    width: 560,
+    bodyHtml: `
+      <div id="mu-inventory" style="font-size:13px;color:var(--text-light)">正在读取店铺数据清点…</div>
+      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-top:8px">
+        标记后：店铺进入"待分配"状态，不再计入任何成员的店铺范围；<b>全部业务数据完整保留</b>，后续可经"修改归属"转交给任意成员。操作前自动创建备份，原归属成员会话将被吊销。
+      </div>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "确认标记待分配", kind: "danger", disabled: true, onClick: async () => {
+          const r = await API.post(`/api/stores/${storeId}/mark-unassigned`, {});
+          toast(`店铺「${storeName}」已标记待分配，业务数据完整保留`, "success");
+          closeModal();
+          loadStores();
+          refreshStats();
+        } },
+    ],
+  });
+  API.get("/api/admin/all-stores").then(d => {
+    const s = ((d.stores || []).find(x => x.store_id === storeId) || {});
+    const c = s.record_counts || {};
+    const el = document.getElementById("mu-inventory");
+    if (el) el.innerHTML = `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px 14px;line-height:1.8">
+        <div>店铺 ID：<span style="font-family:monospace">${esc(storeId)}</span></div>
+        <div>当前数据：订单 ${c.orders ?? 0} 条 / 供应商成本 ${c.supplier_costs ?? 0} 条 / 退款明细 ${c.refund_details ?? 0} 条 / 导入批次 ${c.import_records ?? 0} 个</div>
+      </div>`;
+    enable();
+  }).catch(() => {
+    const el = document.getElementById("mu-inventory");
+    if (el) el.textContent = "数据清点读取失败，可继续操作（后端仍会备份）";
+    enable();
+  });
+}
+
+/* ==================== 迁移清点弹窗（只读） ==================== */
+async function showMigrationOverview() {
+  let d;
+  try {
+    d = await API.get("/api/admin/migration/overview");
+  } catch (e) {
+    toast(e.message || "获取迁移清点失败", "error");
+    return;
+  }
+  const invRow = s => {
+    const inv = s.inventory || {};
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:13px;line-height:1.8">
+      <div><b>${esc(s.name)}</b>（<span style="font-family:monospace;font-size:12px">${esc(s.store_id)}</span>）
+        <span class="badge orange">待迁移</span>${s.orphan ? '<span class="badge gray">孤儿店铺</span>' : ""}
+        <span style="color:var(--text-light);font-size:12px">当前归属：${esc(s.owner_username || "无（待分配）")}</span></div>
+      <div style="font-size:12px;color:var(--text-light)">数据清点：订单 ${inv.orders ?? 0} / 退款订单 ${inv.refund_orders ?? 0} / 退款明细 ${inv.refund_details ?? 0}（退款金额 ${esc(inv.refund_amount ?? "0.00")}）/
+        供应商成本 ${inv.supplier_costs ?? 0}（成本金额 ${esc(inv.cost_amount ?? "0.00")}）/ 广告费 ${esc(inv.ad_expenses ?? "0.00")} /
+        利润结果 ${inv.profit_results ?? 0} / 导入批次 ${inv.import_records ?? 0} / 异常记录 ${inv.anomalies ?? 0}</div>
+    </div>`;
+  };
+  const legacy = (d.admin_stores || []);
+  const unassigned = (d.unassigned_stores || []);
+  const inner = `
+    <div style="font-size:13px;color:var(--text-light);margin-bottom:10px">
+      管理员名下遗留店铺与待分配/孤儿店铺清单（只读）。处理方式二选一：
+      <b>修改归属</b>转交给有效成员，或<b>标记待分配</b>暂存；系统不会自动分配任何店铺。
+    </div>
+    ${legacy.length ? `<div style="font-weight:600;font-size:13px;margin-bottom:6px">管理员遗留店铺（${legacy.length}）</div>${legacy.map(invRow).join("")}` : ""}
+    ${unassigned.length ? `<div style="font-weight:600;font-size:13px;margin:10px 0 6px">待分配 / 孤儿店铺（${unassigned.length}）</div>${unassigned.map(invRow).join("")}` : ""}
+    ${(!legacy.length && !unassigned.length)
+      ? `<div class="empty-state"><div class="icon">✅</div>无待迁移店铺：全部店铺均已归属有效成员</div>` : ""}
+    <div style="font-size:12px;color:var(--text-light);margin-top:8px">
+      成员店铺 ${d.member_stores_count ?? 0} 家（正常营业，无需迁移）；
+      ${d.backup_dir ? `最近备份目录：<span style="font-family:monospace">${esc(d.backup_dir)}</span>` : "暂无历史备份目录"}
+    </div>`;
+  openModal({
+    title: "迁移清点（历史遗留店铺）",
+    width: 720,
+    bodyHtml: inner,
+    actions: [
+      { text: "关闭", kind: "primary", onClick: () => {} },
+    ],
+  });
+}
+document.getElementById("btn-migration-overview").onclick = showMigrationOverview;
+
+/* ==================== 查看店铺数据弹窗（只读统计分组） ==================== */
+async function viewStoreData(storeId) {
+  let d;
+  try {
+    d = await API.get(`/api/stores/${storeId}`);
+  } catch (e) {
+    toast(e.message || "获取店铺详情失败", "error");
+    return;
+  }
+  const inv = d.inventory || {};
+  const extra = {
+    success_refund_amount: d.success_refund_amount,
+    pending_refund_amount: d.pending_refund_amount,
+    last_import_at: d.last_import_at,
+  };
+  const [stLabel, stColor] = STORE_STATUS[d.status] || [d.status, "gray"];
+  const ownerText = d.owner_username
+    ? `${d.owner_username}（${d.owner_user_id}）`
+    : (d.assignment_status === "unassigned" ? "待分配（无归属成员）" : "—");
+  const dash = v => (v === null || v === undefined || v === "") ? "—" : v;
+  const invRows = (groups) => groups.map(([title, rows]) => `
+    <div class="inv-group">
+      <div class="inv-title">${title}</div>
+      ${rows.map(([k, v]) => `<div class="inv-row"><span class="k">${k}</span><span class="v">${dash(v)}</span></div>`).join("")}
+    </div>`).join("");
+  openModal({
+    title: "店铺数据概况",
+    width: 600,
+    bodyHtml: `
+      <div class="store-info-bar">
+        <div class="row">店铺名称：<b>${esc(d.name)}</b> <span class="badge ${stColor}">${stLabel}</span></div>
+        <div class="row">店铺 ID：<span style="font-family:monospace">${esc(d.store_id)}</span></div>
+        <div class="row">归属成员：${esc(ownerText)}${d.orphan ? ' <span class="badge gray">孤儿店铺</span>' : ""}</div>
+        <div class="row">创建时间：${fmtDateTime(d.created_at)}</div>
+      </div>
+      <div class="inv-groups">
+        ${invRows([
+          ["订单", [["订单数量", inv.orders], ["退款订单数量", inv.refund_orders]]],
+          ["退款", [["退款明细", inv.refund_details],
+                    ["成功退款金额（元）", extra.success_refund_amount],
+                    ["处理中退款金额（元）", extra.pending_refund_amount],
+                    ["退款明细累计（元）", inv.refund_amount]]],
+          ["成本", [["供应商成本", inv.supplier_costs], ["成本金额（元）", inv.cost_amount]]],
+          ["导入", [["导入批次", inv.import_records], ["最近导入时间", extra.last_import_at]]],
+        ])}
+      </div>
+      <div style="font-size:12px;color:var(--text-light);margin-top:10px">
+        数据口径：成功退款金额仅统计成功退款（部分/全额）明细；处理中退款单列展示，不计入成功金额；成本与利润不重复计算。停用店铺业务数据完整保留，可在此追溯。
+      </div>`,
+    actions: [
+      { text: "关闭", kind: "secondary", onClick: () => {} },
+      { text: "进入该店铺数据", kind: "primary", onClick: () => {
+          location.href = "/orders?store_id=" + encodeURIComponent(storeId);
+          return false;
+        } },
+    ],
+  });
+}
+
+/* ==================== 停用/启用弹窗 ==================== */
+const STATUS_ACTION_META = {
+  disable: {
+    title: "停用店铺", btn: "确认停用", doing: "停用中…", danger: true,
+    impact: "停用后店铺从归属成员的业务口径移除（登录、上传、查询不再包含该店），<b>全部业务数据完整保留</b>，可随时「启用」恢复。该店铺归属成员需重新登录。",
+  },
+  enable: {
+    title: "启用店铺", btn: "确认启用", doing: "启用中…", danger: false,
+    impact: "启用后店铺恢复营业，重新计入归属成员的店铺范围与业务口径；店铺 ID 与全部业务数据保持不变，不吊销会话。",
+  },
+};
+
+async function changeStoreStatus(storeId, storeName, action) {
+  const meta = STATUS_ACTION_META[action];
+  if (!meta) return;
+  let d;
+  try {
+    d = await API.get(`/api/stores/${storeId}`);
+  } catch (e) {
+    toast(e.message || "获取店铺详情失败", "error");
+    return;
+  }
+  const inv = d.inventory || {};
+  const ownerText = d.owner_username
+    ? `${d.owner_username}（${d.owner_user_id}）`
+    : (d.assignment_status === "unassigned" ? "待分配（无归属成员）" : "—");
+  openModal({
+    title: `${meta.title} - ${storeName}`,
+    width: 560,
+    bodyHtml: `
+      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+        <div>店铺 ID：<span style="font-family:monospace">${esc(storeId)}</span></div>
+        <div>归属成员：${esc(ownerText)}</div>
+        <div>当前数据：订单 ${inv.orders ?? 0} 条 / 供应商成本 ${inv.supplier_costs ?? 0} 条 / 退款明细 ${inv.refund_details ?? 0} 条 / 导入批次 ${inv.import_records ?? 0} 个</div>
+      </div>
+      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-top:8px;background:#fafafa;border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text-light)">${meta.impact}</div>
+      <div style="font-size:12px;color:var(--text-light);margin-top:6px">操作前自动备份两表与整店快照。</div>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: meta.btn, kind: meta.danger ? "danger" : "primary", onClick: async () => {
+          const r = await API.post(`/api/stores/${storeId}/status`, { action });
+          toast(r.message || `${meta.title}成功`, "success");
+          closeModal();
+          loadStores();
+          refreshStats();
+        } },
+    ],
+  });
+}
+
+/* ==================== 删除店铺弹窗（高风险双重确认） ==================== */
+async function deleteStoreFlow(storeId, storeName) {
+  let d;
+  try {
+    d = await API.get(`/api/stores/${storeId}`);
+  } catch (e) {
+    toast(e.message || "获取店铺详情失败", "error");
+    return;
+  }
+  const inv = d.delete_inventory || {};
+  const ownerText = d.owner_username
+    ? `${d.owner_username}（${d.owner_user_id}）`
+    : (d.assignment_status === "unassigned" ? "待分配（无归属成员）" : "—");
+  const otherTitle = `原始导入 ${inv.raw_records ?? 0} 条 / 导出记录 ${inv.export_records ?? 0} 条 / 供应商成本明细 ${inv.supplier_cost_items ?? 0} 条 / 上传文件 ${inv.upload_files ?? 0} 个 / 店铺级备份 ${inv.store_backup_files ?? 0} 个 / 操作日志 ${inv.operation_log_lines ?? 0} 行`;
+  const statCell = (label, v) =>
+    `<span class="rc-item"><span class="rc-label">${label}</span><span class="rc-value">${v ?? 0}</span></span>`;
+  openModal({
+    title: "永久删除店铺及全部数据",
+    width: 600,
+    bodyHtml: `
+      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+        <div>店铺名称：<b>${esc(d.name)}</b></div>
+        <div>店铺 ID：<span style="font-family:monospace">${esc(storeId)}</span></div>
+        <div>当前归属成员：${esc(ownerText)}</div>
+      </div>
+      <div class="record-counts" style="margin-top:10px">
+        ${statCell("普通订单", inv.orders)}
+        ${statCell("退款记录", inv.refund_orders)}
+        ${statCell("退款明细", inv.refund_details)}
+        ${statCell("供应商成本", inv.supplier_costs)}
+        ${statCell("对账记录", inv.reconciliation_results)}
+        ${statCell("利润核算", inv.profit_results)}
+        ${statCell("导入批次", inv.import_records)}
+        ${statCell("其他关联数据", inv.other_total)}
+      </div>
+      <div style="font-size:12px;color:var(--text-light);margin-top:4px" title="${esc(otherTitle)}">
+        其他关联数据：原始导入 / 导出记录 / 成本明细 / 上传文件 / 店铺级备份 / 操作日志等（悬浮查看构成）。
+      </div>
+      <div class="warn-banner" style="margin-top:10px">此操作将永久删除该店铺及其关联业务数据，删除后无法通过本系统恢复。请确认已了解影响。</div>
+      <div style="margin-top:10px"><label>输入完整店铺名称或店铺 ID</label>
+        <input id="ds-confirm" placeholder="须与上述店铺名称或店铺 ID 完全一致" autocomplete="off">
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;cursor:pointer;font-weight:600">
+        <input type="checkbox" id="ds-ack" style="width:auto;cursor:pointer">
+        我确认永久删除该店铺及其全部关联业务数据。
+      </label>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "永久删除", kind: "danger", disabled: true, onClick: async () => {
+          const input = document.getElementById("ds-confirm");
+          const r = await API.post(`/api/stores/${storeId}/delete`, {
+            confirm_store_name: input.value.trim(),
+            confirm_acknowledged: true,
+          });
+          const c = r.deleted_counts || {};
+          toast(`店铺「${r.name}」已永久删除：订单 ${c.orders ?? 0} / 退款订单 ${c.refund_orders ?? 0} / 供应商成本 ${c.supplier_costs ?? 0} / 利润核算 ${c.profit_results ?? 0} 条；已吊销会话 ${r.revoked_sessions ?? 0} 个`, "success", 7000);
+          window.dispatchEvent(new CustomEvent("store-deleted",
+            { detail: { store_id: storeId } }));
+          loadStores();
+          refreshStats();
+        } },
+    ],
+  });
+  const input = document.getElementById("ds-confirm");
+  const ack = document.getElementById("ds-ack");
+  const okBtn = document.getElementById("um-act-1");
+  const syncOk = () => {
+    const v = input.value.trim();
+    okBtn.disabled = !((v === d.name || v === storeId) && ack.checked);
+  };
+  input.oninput = syncOk;
+  ack.onchange = syncOk;
+  input.onkeydown = e => { if (e.key === "Enter" && !okBtn.disabled) okBtn.click(); };
+  input.focus();
+}
+
+/* ==================== 清除业务数据弹窗（独立入口, 强确认双通道） ==================== */
+async function clearStoreDataFlow(storeId, storeName) {
+  let d;
+  try {
+    d = await API.get(`/api/stores/${storeId}`);
+  } catch (e) {
+    toast(e.message || "获取店铺详情失败", "error");
+    return;
+  }
+  const inv = d.delete_inventory || {};
+  openModal({
+    title: "清除店铺业务数据",
+    width: 560,
+    bodyHtml: `
+      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+        <div>店铺：<b>${esc(d.name)}</b>（<span style="font-family:monospace">${esc(storeId)}</span>）</div>
+        <div>当前数据：订单 ${inv.orders ?? 0} 条 / 退款明细 ${inv.refund_details ?? 0} 条 / 供应商成本 ${inv.supplier_costs ?? 0} 条 / 导入批次 ${inv.import_records ?? 0} 个 / 上传文件 ${inv.upload_files ?? 0} 个</div>
+      </div>
+      <div style="font-size:12px;line-height:1.7;margin-top:8px;color:var(--danger)">
+        将清空该店铺全部业务数据（订单/退款/成本/广告费/利润/异常/导入批次）与上传文件；店铺记录与设置保留。清除前自动创建整店快照备份；归属成员会话将被吊销。
+      </div>
+      <div style="margin-top:10px"><label>输入完整店铺名称或店铺 ID</label>
+        <input id="cd-confirm" placeholder="须与上述店铺名称或店铺 ID 完全一致" autocomplete="off">
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;cursor:pointer;font-weight:600">
+        <input type="checkbox" id="cd-ack" style="width:auto;cursor:pointer">
+        我确认清除该店铺的全部业务数据。
+      </label>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "确认清除业务数据", kind: "danger", disabled: true, onClick: async () => {
+          const input = document.getElementById("cd-confirm");
+          const r = await API.post(`/api/stores/${storeId}/clear-data`, {
+            confirm_store_name: input.value.trim(),
+            confirm_acknowledged: true,
+          });
+          toast(`店铺「${r.store_name}」业务数据已清除（已创建整店快照备份）`, "success");
+          loadStores();
+          refreshStats();
+        } },
+    ],
+  });
+  const input = document.getElementById("cd-confirm");
+  const ack = document.getElementById("cd-ack");
+  const okBtn = document.getElementById("um-act-1");
+  const syncOk = () => {
+    const v = input.value.trim();
+    okBtn.disabled = !((v === d.name || v === storeId) && ack.checked);
+  };
+  input.oninput = syncOk;
+  ack.onchange = syncOk;
+  input.onkeydown = e => { if (e.key === "Enter" && !okBtn.disabled) okBtn.click(); };
+  input.focus();
+}
+
+loadStores();
+refreshStats();
+</script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+# ===== CodeBot / AI 助手生成物（勿删数据，仅不纳入版本控制）=====
+.codeartsdoer/
+.merkle-snapshot.json
+
+# ===== 业务数据（含用户隐私，严禁提交）=====
+data/
+backups/
+uploads/
+logs/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.lock
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+.coverage
+htmlcov/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ===== 打包与日志 =====
+*.tar.gz
+*.zip
+*.log

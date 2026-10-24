@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>对账成本 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .risk-yes { color: #d97706; font-weight: 600; }
+  .blocked { color: #dc2626; font-weight: 600; }
+  .candidate-list { max-height: 260px; overflow: auto; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; }
+  .candidate-item { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+  .candidate-item:last-child { border-bottom: none; }
+  .history-note { font-size: 12px; color: var(--text-light); }
+</style>
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard">经营总览</a>
+    <a href="/data-import">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details">退款明细</a>
+    <a href="/supplier-costs">供应商成本</a>
+    <a href="/reconciliation" class="active">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create">创建用户</a>
+      <a href="/stores">店铺管理</a>
+      <a href="/users">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">对账成本</div>
+  <div class="page-desc">按「主订单编号精确 → 订单编号精确 → 标准化相等 → 辅助候选（待人工确认）」优先级匹配；一个订单可关联多条供应商明细；总金额多行重复时自动识别重复风险并去重，粒度未经人工确认前不用于最终利润计算。月份筛选按订单下单时间归属（左闭右开区间）。</div>
+
+  <div id="month-filter"></div>
+  <div id="store-scope"></div>
+
+  <div class="stat-grid" id="stat-grid"></div>
+
+  <div class="card">
+    <div class="filter-grid">
+      <div class="filter-item"><label>订单号（精确）</label><input id="f-order-id" placeholder="输入完整订单号"></div>
+      <div class="filter-item"><label>匹配状态</label>
+        <select id="f-status"><option value="">全部</option></select>
+      </div>
+      <div class="filter-item"><label>异常类型</label>
+        <select id="f-anomaly"><option value="">全部</option></select>
+      </div>
+      <div class="filter-actions">
+        <button class="btn" id="btn-query">查询</button>
+        <button class="btn secondary" id="btn-reset">重置</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card table-card">
+    <div class="card-head"><h3 style="margin:0">对账结果</h3>
+      <div class="head-actions">
+        <span class="hint" id="last-recon"></span>
+        <span class="hint" id="table-hint"></span>
+        <button class="btn" id="btn-run">执行对账</button>
+        <button class="btn secondary" id="btn-export">导出当前筛选</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="recon-table">
+        <thead><tr>
+          <th>订单号</th><th>时间</th><th>匹配状态</th><th>匹配方式</th>
+          <th class="num">明细数</th><th class="num">微信实收</th><th class="num">供货实收</th>
+          <th class="num">金额差异</th><th class="num">数量差</th>
+          <th class="num">综合成本(去重)</th><th class="num">直接累加</th><th class="num">去重扣除</th>
+          <th>成本粒度</th><th>风险</th><th>可用</th><th>异常</th><th class="col-op">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="table-state"></div>
+    <div class="pager" id="pager"></div>
+  </div>
+</div>
+
+<!-- 对账详情模态 -->
+<div class="modal-mask" id="detail-modal">
+  <div class="modal" style="max-width:900px">
+    <div class="modal-head"><h3 id="detail-title">对账详情</h3><button class="modal-close" onclick="closeDetail()">×</button></div>
+    <div class="modal-body" id="detail-body"></div>
+  </div>
+</div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/modal.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/month_filter.js"></script>
+<script src="/static/store_scope.js"></script>
+<script>
+const STATE = { page: 1, size: 50, options: null };
+
+const MF = new MonthFilter({
+  container: "month-filter",
+  timeLabel: "订单下单时间",
+  onChange: () => { STATE.page = 1; load(); },
+});
+
+const SS = new StoreScope({
+  container: "store-scope",
+  onChange: () => { STATE.page = 1; load(); },
+});
+
+const STATUS_META = {
+  matched: ["已匹配", "green"], manual_confirmed: ["人工确认", "blue"],
+  suspected: ["疑似匹配", "orange"], unmatched_order: ["未匹配订单", "red"],
+  unmatched_supplier: ["未匹配成本", "red"],
+};
+const METHOD_LABELS = {
+  main_order_id_exact: "① 主订单编号精确", supplier_order_id_exact: "② 订单编号精确",
+  normalized_equal: "③ 标准化后相等", assisted_candidate: "④ 辅助候选",
+  manual: "人工确认",
+};
+const GRAN_LABELS = {
+  order_level: "订单级", package_level: "物流单级", supplier_line: "商品行级",
+  mixed: "混合", unknown: "未知",
+};
+
+function matchBadge(s) {
+  const [label, color] = STATUS_META[s] || [s || "—", "gray"];
+  return `<span class="badge ${color}">${esc(label)}</span>`;
+}
+function riskCell(r) {
+  const c = r.cost || {};
+  const parts = [];
+  if (c.duplicate_total_amount_risk) parts.push(`<span class="risk-yes">重复</span>`);
+  if (c.order_level_dedup_pending) parts.push(`<span class="risk-yes">粒度待确认</span>`);
+  return parts.length ? parts.join("<br>") : "—";
+}
+function usableCell(r) {
+  if (!r.supplier_record_ids || !r.supplier_record_ids.length) return "—";
+  return r.cost && r.cost.usable_for_profit
+    ? '<span class="badge green">是</span>'
+    : '<span class="blocked">否</span>';
+}
+
+function queryStr() {
+  const p = new URLSearchParams();
+  p.set("page", STATE.page); p.set("page_size", STATE.size);
+  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
+  SS.appendTo(p);
+  const v = id => document.getElementById(id).value.trim();
+  if (v("f-order-id")) p.set("order_id", v("f-order-id"));
+  if (v("f-status")) p.set("match_status", v("f-status"));
+  if (v("f-anomaly")) p.set("anomaly_type", v("f-anomaly"));
+  return p.toString();
+}
+
+async function load() {
+  const state = document.getElementById("table-state");
+  const tbody = document.querySelector("#recon-table tbody");
+  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  tbody.innerHTML = "";
+  try {
+    const data = await API.get(`/api/reconciliation?${queryStr()}`);
+    renderStats(data.statistics);
+    state.innerHTML = "";
+    if (!data.results.length) {
+      state.innerHTML = `<div class="empty-state"><div class="icon">🔗</div>暂无对账结果<br><span style="font-size:12px">请先在「数据导入」页导入微信订单与供应商成本 Excel，再点击「执行对账」</span></div>`;
+    } else {
+      tbody.innerHTML = data.results.map(r => `<tr>
+        <td>${esc(r.order_id || `(供货) ${r.supplier_order_key || ""}`)}</td>
+        <td>${fmtTime(r.order_time)}</td>
+        <td>${matchBadge(r.match_status)}</td>
+        <td style="font-size:12px">${r.match_method ? METHOD_LABELS[r.match_method] || esc(r.match_method) : "—"}</td>
+        <td class="num">${(r.cost && r.cost.line_count) || 0}</td>
+        <td class="num">${fmtMoney(r.checks && r.checks.wechat_received_amount)}</td>
+        <td class="num">${fmtMoney(r.checks && r.checks.supplier_received_amount)}</td>
+        <td class="num">${r.checks && r.checks.amount_diff !== null && r.checks.amount_diff !== undefined ? fmtMoney(r.checks.amount_diff) : "—"}</td>
+        <td class="num">${r.checks && r.checks.quantity_diff !== null && r.checks.quantity_diff !== undefined ? r.checks.quantity_diff : "—"}</td>
+        <td class="num">${fmtMoney(r.cost && r.cost.total_amount)}</td>
+        <td class="num">${fmtMoney(r.cost && r.cost.raw_line_sum)}</td>
+        <td class="num">${fmtMoney(r.cost && r.cost.dedup_amount)}</td>
+        <td style="font-size:12px">${GRAN_LABELS[(r.cost && r.cost.granularity)] || "—"}</td>
+        <td style="font-size:12px">${riskCell(r)}</td>
+        <td>${usableCell(r)}</td>
+        <td style="font-size:12px">${(r.exception_codes || []).length
+          ? `<span class="badge red">${r.exception_codes.length} 项</span>` : "—"}</td>
+        <td class="col-op"><button class="link-btn" onclick='showDetail(${JSON.stringify(JSON.stringify(r))})'>详情</button></td>
+      </tr>`).join("");
+    }
+    document.getElementById("table-hint").textContent = data.total ? `第 ${data.page}/${data.pages} 页` : "";
+    renderPager(document.getElementById("pager"), data, {
+      onPage: p => { STATE.page = p; load(); },
+      onSize: s => { STATE.size = s; STATE.page = 1; load(); },
+    });
+  } catch (e) {
+    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
+    renderStats(null);
+  }
+}
+
+function renderStats(s) {
+  const el = document.getElementById("stat-grid");
+  if (!s) { el.innerHTML = ""; return; }
+  el.innerHTML = [
+    ["对账记录", s.total, ""],
+    ["已匹配", s.matched, ""],
+    ["人工确认", s.manual_confirmed, ""],
+    ["疑似匹配（待确认）", s.suspected, "warn"],
+    ["未匹配订单 / 成本", `${s.unmatched_order} / ${s.unmatched_supplier}`, "warn"],
+    ["重复风险", s.duplicate_risk, "warn"],
+    ["不可用于利润", s.profit_blocked, "warn"],
+  ].map(([l, v, c]) => `<div class="stat-item"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("");
+}
+
+function runReconcile() {
+  confirmModal("执行对账", "确定执行对账？将按匹配优先级重新关联微信订单与供应商成本（人工确认的关系会保留）。", doRunReconcile);
+}
+
+async function doRunReconcile() {
+  const btn = document.getElementById("btn-run");
+  btn.disabled = true; btn.textContent = "对账中…";
+  try {
+    const r = await API.post("/api/reconciliation/run", SS.writeTarget());
+    const s = r.summary;
+    document.getElementById("last-recon").textContent =
+      `最近对账：${r.reconciliation_id}（${s.matched + s.manual_confirmed} 已匹配 / ${s.suspected} 疑似 / ${s.unmatched_order} 未匹配订单 / ${s.unmatched_supplier} 未匹配成本）`;
+    toast(`对账完成：新增异常 ${r.anomalies_created} 条，自动关闭 ${r.anomalies_auto_resolved} 条`, "success");
+    STATE.page = 1;
+    await load();
+  } catch (e) {
+    toast(e.message || "对账失败", "error");
+  } finally {
+    btn.disabled = false; btn.textContent = "执行对账";
+  }
+}
+
+function closeDetail() { document.getElementById("detail-modal").classList.remove("show"); }
+
+function showDetail(jsonStr) {
+  const r = JSON.parse(jsonStr);
+  document.getElementById("detail-title").textContent =
+    `对账详情：${r.order_id || `(供货) ${r.supplier_order_key || ""}`}`;
+  document.getElementById("detail-modal").classList.add("show");
+  renderDetail(r);
+}
+
+function renderDetail(r) {
+  const body = document.getElementById("detail-body");
+  const c = r.cost || {}, k = r.checks || {};
+  const mr = r.manual_review || {};
+  const anomalies = (r.exception_codes || []).map(t =>
+    `<span class="badge red" style="margin:2px">${esc((STATE.options && STATE.options.anomaly_types[t]) || t)}</span>`).join("") || "—";
+
+  const costLines = (c.lines || []).map((ln, i) => `<tr>
+    <td>${i + 1}</td>
+    <td>${GRAN_LABELS[ln.granularity] || ln.granularity}</td>
+    <td class="num">${fmtMoneyYuan(ln.total_amount)}</td>
+    <td style="font-size:12px">${esc((ln.record_ids || []).join(", "))}</td>
+    <td style="font-size:12px;color:#d97706">${(ln.duplicated_record_ids || []).length
+      ? `去重排除：${esc(ln.duplicated_record_ids.join(", "))}` : ""}</td>
+  </tr>`).join("");
+
+  const history = (mr.history || []).map(h => `<tr>
+    <td>${fmtTime(h.operated_at)}</td>
+    <td>${esc(h.operator)}</td>
+    <td>${h.action === "confirm" ? "确认匹配" : "解除匹配"}</td>
+    <td>${esc(h.cost_granularity === "order_level" ? "订单级（同额只扣一次）"
+      : h.cost_granularity === "line_level" ? "行级（逐行累加）" : "—")}</td>
+    <td style="max-width:220px;white-space:normal">${esc(h.note || "")}</td>
+    <td style="font-size:12px;max-width:260px;white-space:normal">
+      前：${esc(h.before ? `${h.before.match_status || "无"} / 成本 ${h.before.cost_total_amount ?? "—"} / 可用 ${h.before.usable_for_profit ? "是" : "否"}` : "无")}<br>
+      后：${esc(h.after ? `${h.after.match_status || "无"} / 成本 ${h.after.cost_total_amount ?? "—"} / 可用 ${h.after.usable_for_profit ? "是" : "否"}` : "无")}
+    </td>
+  </tr>`).join("");
+
+  body.innerHTML = `
+    <div class="detail-section"><h4>匹配信息</h4>
+      <div class="kv-grid">
+        ${[
+          ["匹配状态", ""], ["匹配方式", r.match_method ? METHOD_LABELS[r.match_method] || r.match_method : "—"],
+          ["匹配规则", (r.match_detail && r.match_detail.rule_hit) || "—"],
+          ["微信记录数", (r.wechat_record_ids || []).length],
+          ["供货明细数", (r.supplier_record_ids || []).length],
+          ["下单/创建时间", fmtTime(r.order_time)],
+          ["微信实收", fmtMoneyYuan(k.wechat_received_amount)],
+          ["供货实收", fmtMoneyYuan(k.supplier_received_amount)],
+          ["金额差异", k.amount_diff != null ? fmtMoneyYuan(k.amount_diff) : "—"],
+          ["数量（微信/供货）", `${k.wechat_quantity ?? "—"} / ${k.supplier_quantity ?? "—"}`],
+        ].map(([kk, vv]) => `<div class="kv"><div class="k">${kk}</div><div class="v">${typeof vv === "string" && vv.includes("badge") ? vv : esc(vv)}</div></div>`).join("")
+          .replace("匹配状态</div><div class=\"v\"></div>", `匹配状态</div><div class="v">${matchBadge(r.match_status)}</div>`)}
+      </div>
+    </div>
+    <div class="detail-section"><h4>成本汇总（粒度区分）</h4>
+      <div class="kv-grid">
+        ${[
+          ["成本粒度", GRAN_LABELS[c.granularity] || "—"],
+          ["人工确认粒度", c.confirmed_granularity === "order_level" ? "订单级（同额只扣一次）"
+            : c.confirmed_granularity === "line_level" ? "行级（逐行累加）" : "未确认"],
+          ["综合成本（去重后）", fmtMoneyYuan(c.total_amount)],
+          ["直接累加值", fmtMoneyYuan(c.raw_line_sum)],
+          ["去重扣除", fmtMoneyYuan(c.dedup_amount)],
+          ["重复风险", c.duplicate_total_amount_risk ? "是（禁止直接重复累加）" : "否"],
+          ["粒度待确认", c.order_level_dedup_pending ? "是" : "否"],
+          ["可用于利润计算", r.supplier_record_ids && r.supplier_record_ids.length
+            ? (c.usable_for_profit ? "是" : "否（粒度未确认或成本缺失）") : "—"],
+        ].map(([kk, vv]) => `<div class="kv"><div class="k">${kk}</div><div class="v">${esc(vv)}</div></div>`).join("")}
+      </div>
+      ${costLines ? `<div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>粒度</th><th class="num">金额</th><th>成本记录</th><th>重复处理</th></tr></thead>
+        <tbody>${costLines}</tbody></table></div>` : ""}
+    </div>
+    <div class="detail-section"><h4>异常标记</h4><div>${anomalies}</div></div>
+    <div class="detail-section"><h4>人工匹配</h4>
+      <div id="manual-panel"></div>
+    </div>
+    <div class="detail-section"><h4>人工操作历史</h4>
+      ${history ? `<div class="table-wrap"><table>
+        <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>粒度确认</th><th>备注</th><th>修改前后值</th></tr></thead>
+        <tbody>${history}</tbody></table></div>`
+        : `<div class="history-note">暂无人工操作记录</div>`}
+    </div>`;
+  renderManualPanel(r);
+}
+
+async function renderManualPanel(r) {
+  const panel = document.getElementById("manual-panel");
+  if (!r.order_id) {
+    panel.innerHTML = `<div class="history-note">该记录为未匹配的供应商成本，请在对应订单的详情中绑定。</div>`;
+    return;
+  }
+  let orphans = [];
+  try {
+    const d = await API.get("/api/reconciliation?match_status=unmatched_supplier&size=100");
+    orphans = d.results;
+  } catch (e) { /* 忽略 */ }
+  const current = new Set(r.supplier_record_ids || []);
+  const items = orphans.map(o => {
+    const sids = o.supplier_record_ids || [];
+    const checked = sids.some(s => current.has(s)) ? "checked" : "";
+    return `<label class="candidate-item">
+      <input type="checkbox" data-sid="${esc(sids[0] || "")}" ${checked}>
+      <span>供货键 <b>${esc(o.supplier_order_key)}</b>｜总金额 <b>${fmtMoneyYuan((o.cost || {}).total_amount)}</b>
+      ｜快递单号 ${esc(((o.cost || {}).lines || [])[0] ? "有" : "—")}｜${esc(sids[0] || "")}</span>
+    </label>`;
+  }).join("");
+  panel.innerHTML = `
+    <div style="font-size:13px;margin-bottom:8px">
+      勾选未匹配成本记录绑定至订单 <b>${esc(r.order_id)}</b>（可多选，即"一个订单关联多条供应商明细"）；
+      如需覆盖现有绑定，将自动替换本订单的全部关联。
+    </div>
+    <div class="candidate-list">${items || '<div class="candidate-item">暂无未匹配成本记录（可先执行对账刷新）</div>'}</div>
+    <div class="filter-bar" style="margin-top:10px">
+      <div class="filter-item" style="flex:2"><label>手动输入成本记录 ID（可选，逗号分隔）</label>
+        <input id="m-extra-ids" placeholder="sup_xxx,sup_yyy"></div>
+      <div class="filter-item"><label>成本粒度确认（可选）</label>
+        <select id="m-granularity">
+          <option value="">不确认（重复风险记录不可用于利润）</option>
+          <option value="order_level">订单级：同额多行只扣一次</option>
+          <option value="line_level">行级：各明细行分别累加</option>
+        </select></div>
+      <div class="filter-item" style="flex:2"><label>操作原因（记录审计）</label>
+        <input id="m-note" placeholder="例如：核对快递单后确认"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn" onclick="submitManual('${esc(r.order_id)}', 'confirm')">确认匹配关系</button>
+      ${r.match_method === "manual" ? `<button class="btn secondary" onclick="submitManual('${esc(r.order_id)}', 'unbind')">解除全部匹配</button>` : ""}
+    </div>
+    <div class="history-note" style="margin-top:6px">人工确认会记录操作人、时间、匹配规则与修改前后值；重跑对账与重新导入均不会覆盖人工结果。</div>`;
+}
+
+async function submitManual(orderId, action) {
+  const sids = [];
+  document.querySelectorAll("#manual-panel input[data-sid]:checked").forEach(cb => {
+    sids.push(cb.dataset.sid);
+  });
+  const extra = (document.getElementById("m-extra-ids")?.value || "")
+    .split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+  const all = [...new Set([...sids, ...extra])];
+  const gran = document.getElementById("m-granularity")?.value || null;
+  const note = document.getElementById("m-note")?.value || null;
+  if (action === "confirm" && !all.length) {
+    toast("请至少勾选一条成本记录或手动输入记录 ID", "error");
+    return;
+  }
+  try {
+    const rec = await API.post("/api/reconciliation/manual-match", {
+      order_id: orderId, action,
+      supplier_record_ids: all.length ? all : undefined,
+      cost_granularity: gran || undefined, note: note || undefined,
+    });
+    toast(action === "confirm" ? "人工确认已保存" : "已解除匹配", "success");
+    renderDetail(rec);
+    load();
+  } catch (e) {
+    toast(e.message || "操作失败", "error");
+  }
+}
+
+async function loadOptions() {
+  try {
+    STATE.options = await API.get("/api/reconciliation/options");
+    const st = document.getElementById("f-status");
+    const an = document.getElementById("f-anomaly");
+    st.innerHTML += Object.entries(STATE.options.match_status)
+      .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+    an.innerHTML += Object.entries(STATE.options.anomaly_types)
+      .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  } catch (e) { /* 忽略 */ }
+}
+
+document.getElementById("btn-run").onclick = runReconcile;
+document.getElementById("btn-query").onclick = () => { STATE.page = 1; load(); };
+document.getElementById("btn-reset").onclick = () => {
+  ["f-order-id", "f-status", "f-anomaly"].forEach(id =>
+    document.getElementById(id).value = "");
+  STATE.page = 1;
+  MF.reset();
+};
+document.getElementById("btn-export").onclick = () => {
+  window.open(`/api/reconciliation/export?${queryStr()}`);
+  toast("导出文件生成中…", "info");
+};
+["f-order-id"].forEach(id =>
+  document.getElementById(id).addEventListener("keydown", e => {
+    if (e.key === "Enter") { STATE.page = 1; load(); }
+  }));
+document.querySelector(".filter-grid").addEventListener("change", e => {
+  if (e.target.matches("select")) { STATE.page = 1; load(); }
+});
+
+loadOptions().then(load);
+</script>
+</body>
+</html>

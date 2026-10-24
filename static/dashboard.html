@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>经营总览 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
+.kpi-card{background:var(--bg-card,#fff);border:1px solid var(--border,#e5e7eb);border-radius:10px;padding:14px 16px;position:relative}
+.kpi-card .label{font-size:12px;color:var(--text-light,#6b7280)}
+.kpi-card .value{font-size:24px;font-weight:700;margin-top:4px;word-break:break-all}
+.kpi-card .sub{font-size:11px;color:var(--text-light,#6b7280);margin-top:2px}
+.kpi-card.hero{grid-column:span 2;border-left:4px solid var(--primary,#0f766e)}
+.kpi-card.warn{border-left:4px solid var(--warning,#f59e0b)}
+.kpi-card.good{border-left:4px solid var(--success,#16a34a)}
+.status-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;font-size:12px}
+</style>
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard" class="active">经营总览</a>
+    <a href="/data-import">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details">退款明细</a>
+    <a href="/supplier-costs">供应商成本</a>
+    <a href="/reconciliation">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create">创建用户</a>
+      <a href="/stores">店铺管理</a>
+      <a href="/users">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+    <span class="meta" id="nav-meta"></span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">经营总览</div>
+  <div class="page-desc">按月份/日期范围汇总经营指标（默认本月）；利润为经营贡献利润口径，可计算订单明细汇总与看板完全一致（误差 ≤ 0.01 元）。</div>
+  <div class="declare-banner" id="declaration"></div>
+
+  <div id="month-filter"></div>
+  <div id="store-scope"></div>
+
+  <div class="card">
+    <div class="filter-bar" style="align-items:center">
+      <span style="font-size:13px;color:var(--text-light)">统计口径：订单下单时间（左闭右开区间）</span>
+      <button class="btn" id="btn-goto-calc" style="margin-left:auto">去核算利润</button>
+    </div>
+  </div>
+
+  <div id="kpi-area"><div class="loading-state"><div class="spinner"></div>加载中…</div></div>
+
+  <div class="card" id="status-card" style="display:none">
+    <h3 style="margin:0 0 6px">利润可计算性与提醒</h3>
+    <div id="status-body"></div>
+  </div>
+</div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/month_filter.js"></script>
+<script src="/static/store_scope.js"></script>
+<script>
+const MF = new MonthFilter({
+  container: "month-filter",
+  timeLabel: "订单下单时间",
+  onChange: () => load(),
+});
+
+const SS = new StoreScope({
+  container: "store-scope",
+  onChange: () => load(),
+});
+
+function qs() {
+  const p = new URLSearchParams();
+  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
+  SS.appendTo(p);
+  return p;
+}
+
+async function load() {
+  const area = document.getElementById("kpi-area");
+  area.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  document.getElementById("status-card").style.display = "none";
+  try {
+    const [h, s] = await Promise.all([
+      API.get("/api/health"),
+      API.get(`/api/summary?${qs().toString()}`),
+    ]);
+    document.getElementById("nav-meta").textContent = `${h.service} v${h.version}`;
+    document.getElementById("declaration").textContent = s.declaration || "";
+
+    if (!s.has_orders) {
+      area.innerHTML = `<div class="empty-state"><div class="icon">📭</div>当前筛选（${esc(MF.getLabel())}）内暂无订单数据<br>
+        <span style="font-size:13px;color:var(--text-light)">可切换月份或选择「全部」查看全部数据；请先在数据导入页上传微信订单 Excel（未覆盖期间不计为 0 销售）</span></div>`;
+      return;
+    }
+    render(s);
+  } catch (e) {
+    area.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
+  }
+}
+
+function kpi(label, value, sub = "", cls = "") {
+  return `<div class="kpi-card ${cls}"><div class="label">${label}</div>
+    <div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+}
+
+function render(s) {
+  const margin = s.profit_margin
+    ? `<div class="value" style="color:var(--success)">${esc(s.profit_margin)}</div>`
+    : `<div class="value">—</div><div class="sub">${esc(s.profit_margin_blocked_label || "净收入不大于零，禁止显示误导性利润率")}</div>`;
+  const refundRate = s.refund_rate ? `退款率 ${esc(s.refund_rate)}` : "退款率 —";
+  const cards = [
+    kpi("订单数（去重）", s.order_count, `退款订单 ${s.refund_order_count} 单`),
+    kpi("订单实际收款金额", fmtMoneyYuan(s.actual_received_amount), `实付合计 ¥${fmtMoney(s.actual_paid_amount)} · 商品销售额 ¥${fmtMoney(s.product_sales_amount)}`),
+    kpi("成功退款", fmtMoneyYuan(s.refund_success_amount), `${refundRate} · 处理中 ¥${fmtMoney(s.refund_pending_amount)}（不计入成功退款）`),
+    kpi("综合成本（总金额，只扣一次）", fmtMoneyYuan(s.supplier_total_cost), "按对账确认粒度汇总"),
+    kpi("技术服务费", fmtMoneyYuan(s.technical_service_fee), "订单去重汇总"),
+    kpi("经营贡献利润", fmtMoneyYuan(s.operating_contribution_profit), `净收入合计 ¥${fmtMoney(s.net_revenue_total)}`, "good"),
+    `<div class="kpi-card hero"><div class="label">经营贡献利润率</div>${margin}
+       <div class="sub">利润率 = 贡献利润 ÷ 净收入（仅净收入 &gt; 0 时计算）</div></div>`,
+    kpi("未匹配订单", s.unmatched_order_count, "成本未知，利润不可计算", s.unmatched_order_count > 0 ? "warn" : ""),
+    kpi("未处理异常", `<a href="/anomalies" style="color:inherit">${s.open_anomaly_count}</a>`, "点击进入异常处理", s.open_anomaly_count > 0 ? "warn" : ""),
+    kpi("可计算利润覆盖率", esc(s.profit_coverage || "0.00%"), `可计算 ${s.calculable_order_count} / ${s.order_count} 单`),
+  ];
+  document.getElementById("kpi-area").innerHTML = `<div class="kpi-grid">${cards.join("")}</div>`;
+
+  const sc = s.profit_status_counts || {};
+  const run = s.latest_calculation;
+  const reminders = [];
+  if (!s.has_calculation) {
+    reminders.push(`尚未执行利润核算 —— 点击右上"去核算利润"完成首次核算后，本页展示贡献利润与利润率。`);
+  } else {
+    reminders.push(`最新核算 ${esc(run.calculation_id)} · 规则版本 ${esc(run.rules_version)} · 时间 ${esc(fmtTime(run.calculated_at))}`);
+    if (sc.pending_confirmation) reminders.push(`<span class="badge orange">待确认 ${sc.pending_confirmation} 单</span> 口径未确认或成本重复风险未解决，<a href="/profit?profit_status=pending_confirmation">去处理</a>`);
+    if (sc.not_calculable) reminders.push(`<span class="badge gray">不可计算 ${sc.not_calculable} 单</span> 缺实收或缺成本，<a href="/profit?profit_status=not_calculable">查看明细</a>`);
+    if (sc.needs_review) reminders.push(`<span class="badge blue">需复核 ${sc.needs_review} 单</span> 实收金额多行不一致，<a href="/profit?profit_status=needs_review">去复核</a>`);
+    if ((s.policies || {}).refund_deduction_status === "unknown") {
+      reminders.push(`<span class="badge orange">退款口径未确认</span> 存在退款的订单利润显示"待确认"，请到 <a href="/profit">利润核算页</a> 确认口径`);
+    }
+  }
+  document.getElementById("status-body").innerHTML =
+    `<div class="status-row">${reminders.map(x => `<div>${x}</div>`).join("")}</div>`;
+  document.getElementById("status-card").style.display = "";
+}
+
+document.getElementById("btn-goto-calc").onclick = () => {
+  const p = new URLSearchParams();
+  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
+  SS.appendTo(p);
+  location.href = `/profit?${p.toString()}`;
+};
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>创建用户 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+/* 创建用户卡片（本页专属 SaaS 风格; .create-* 前缀 + 内嵌作用域双重隔离, 不改动全局样式） */
+.create-card { border-radius: 12px; padding: 24px; max-width: 760px; }
+.create-form {
+  display: grid; grid-template-columns: 1fr 1fr;
+  column-gap: 20px; row-gap: 16px;
+}
+.create-field { display: flex; flex-direction: column; gap: 6px; }
+.create-field label { font-size: 14px; color: #374151; }
+.create-field label .req { color: var(--danger); margin-left: 2px; }
+.create-field input, .create-field select {
+  width: 100%; height: 44px; border: 1px solid var(--border); border-radius: 8px;
+  background: #fff; padding: 0 12px; font-size: 14px; color: var(--text);
+}
+.create-field input::placeholder { color: var(--text-light); }
+.create-field select { appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px;
+}
+.create-field input:focus, .create-field select:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .1);
+}
+.create-field.has-err input, .create-field.has-err select { border-color: var(--danger); }
+.create-field.has-err input:focus, .create-field.has-err select:focus {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, .1);
+}
+.create-field.is-off { opacity: .55; }
+.create-field.is-off input { background: var(--bg); }
+.field-err {
+  font-size: 12px; color: var(--danger); line-height: 1.4;
+  min-height: 16px; margin-top: 2px;
+}
+.create-foot {
+  grid-column: 1 / -1; display: flex; align-items: flex-end;
+  justify-content: space-between; gap: 16px; flex-wrap: wrap;
+}
+.create-foot #create-result { flex: 1 1 320px; min-width: 0; }
+.create-actions { display: flex; gap: 12px; margin-left: auto; }
+.create-form .btn, .create-form .btn.create-submit {
+  height: 44px; border-radius: 8px; padding: 0 20px; font-size: 14px;
+  min-width: 96px; margin-bottom: 0;
+}
+.create-msg { border-radius: 8px; padding: 10px 14px; font-size: 13px; line-height: 1.7; }
+.create-msg.ok { background: #f0fdf4; color: var(--success); }
+.create-msg.ok .ids { font-size: 12px; color: var(--success); opacity: .85;
+  margin-top: 2px; font-family: monospace; }
+.create-msg.ok a { color: var(--primary); font-weight: 600; }
+.create-msg.err { background: #fef2f2; color: var(--danger); }
+/* 初始店铺字段组（占两列）: 两张单选卡片, 选中态高亮 */
+.init-store-group { grid-column: 1 / -1; }
+.store-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.store-option {
+  border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+  transition: border-color .15s, background .15s;
+}
+.store-option.is-on { border-color: var(--primary); background: #f8faff; }
+.create-field .store-option input[type="radio"] {
+  width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--primary);
+}
+.store-option .opt-title { display: block; font-size: 14px; color: var(--text); font-weight: 500; }
+.store-option .opt-desc { display: block; font-size: 12px; color: var(--text-light); margin-top: 2px; line-height: 1.5; }
+@media (max-width: 768px) {
+  .create-form { grid-template-columns: 1fr; }
+  .store-options { grid-template-columns: 1fr; }
+  .create-foot { flex-direction: column; align-items: stretch; }
+  .create-actions { width: 100%; margin-left: 0; }
+  .create-actions .btn { flex: 1; min-width: 0; }
+}
+</style>
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard">经营总览</a>
+    <a href="/data-import">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details">退款明细</a>
+    <a href="/supplier-costs">供应商成本</a>
+    <a href="/reconciliation">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group nav-group-current" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create" class="active">创建用户</a>
+      <a href="/stores">店铺管理</a>
+      <a href="/users">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">创建用户</div>
+  <div class="page-desc">创建登录账号，并为成员分配独立的店铺数据空间。</div>
+
+  <div class="card create-card">
+    <form class="create-form" id="create-form">
+      <div class="create-field">
+        <label for="c-username">用户名（登录账号）<span class="req" aria-hidden="true">*</span></label>
+        <input id="c-username" autocomplete="off" placeholder="3-32 位字母/数字/下划线" aria-required="true">
+        <div class="field-err" id="err-username" aria-live="polite"></div>
+      </div>
+      <div class="create-field">
+        <label for="c-password">初始密码<span class="req" aria-hidden="true">*</span></label>
+        <input id="c-password" type="password" autocomplete="new-password" placeholder="至少 8 位，含字母和数字" aria-required="true">
+        <div class="field-err" id="err-password" aria-live="polite"></div>
+      </div>
+      <div class="create-field">
+        <label for="c-confirm">确认密码<span class="req" aria-hidden="true">*</span></label>
+        <input id="c-confirm" type="password" autocomplete="new-password" placeholder="再次输入初始密码" aria-required="true">
+        <div class="pwd-match-hint" id="pwd-hint" aria-live="polite"></div>
+        <div class="field-err" id="err-confirm" aria-live="polite"></div>
+      </div>
+      <div class="create-field">
+        <label for="c-role">角色<span class="req" aria-hidden="true">*</span></label>
+        <select id="c-role" aria-required="true">
+          <option value="member" selected>member（成员）</option>
+          <option value="admin">admin（管理员）</option>
+        </select>
+        <div class="field-err" id="err-role" aria-live="polite"></div>
+      </div>
+      <div class="create-field init-store-group" id="init-store-group">
+        <label id="init-store-label">初始店铺<span class="req" aria-hidden="true">*</span></label>
+        <div class="store-options" role="radiogroup" aria-labelledby="init-store-label">
+          <div class="store-option" id="opt-create">
+            <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin:0">
+              <input type="radio" name="init-store" value="create" checked>
+              <span>
+                <span class="opt-title">创建初始店铺</span>
+                <span class="opt-desc">为该成员创建具有独立数据空间的初始店铺</span>
+              </span>
+            </label>
+            <div id="store-name-wrap" style="margin-top:10px">
+              <input id="c-store" autocomplete="off" maxlength="64" placeholder="店铺名称（选填，留空则默认「用户名的店铺」）">
+              <div class="field-err" id="err-store" aria-live="polite"></div>
+            </div>
+          </div>
+          <div class="store-option" id="opt-skip">
+            <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin:0">
+              <input type="radio" name="init-store" value="skip">
+              <span>
+                <span class="opt-title">暂不创建，稍后分配</span>
+                <span class="opt-desc">创建后可在「店铺管理」页为该成员创建或分配店铺</span>
+              </span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="create-field">
+        <label for="c-status">账号状态<span class="req" aria-hidden="true">*</span></label>
+        <select id="c-status" aria-required="true">
+          <option value="active" selected>启用（active）</option>
+          <option value="disabled">停用（disabled）</option>
+        </select>
+        <div class="field-err" id="err-status" aria-live="polite"></div>
+      </div>
+      <div class="create-foot">
+        <div id="create-result" aria-live="polite"></div>
+        <div class="create-actions">
+          <button class="btn secondary" id="btn-reset" type="button">重置</button>
+          <button class="btn secondary" id="btn-cancel" type="button">取消</button>
+          <button class="btn create-submit" id="btn-create" type="submit">创建用户</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script>
+const usernameInput = document.getElementById("c-username");
+const passwordInput = document.getElementById("c-password");
+const confirmInput = document.getElementById("c-confirm");
+const roleInput = document.getElementById("c-role");
+const storeInput = document.getElementById("c-store");
+const statusInput = document.getElementById("c-status");
+const submitBtn = document.getElementById("btn-create");
+const resultBox = document.getElementById("create-result");
+
+setupPasswordToggle(passwordInput, "显示或隐藏初始密码");
+setupPasswordToggle(confirmInput, "显示或隐藏确认密码");
+
+/* 确认密码纯前端实时一致性校验: 不一致禁止提交; 请求体不包含确认密码字段 */
+const checkMatch = bindPasswordMatch({
+  newInput: passwordInput,
+  confirmInput: confirmInput,
+  hintEl: document.getElementById("pwd-hint"),
+  submitBtn,
+});
+
+/* ---------- 字段级错误组件: textContent 写入(防 XSS), 就近显示 ---------- */
+const FIELD_IDS = ["username", "password", "confirm", "role", "store", "status"];
+function showFieldErr(id, message) {
+  const err = document.getElementById("err-" + id);
+  const input = document.getElementById("c-" + id);
+  if (err) err.textContent = message || "";
+  if (input) {
+    const field = input.closest(".create-field");
+    if (field) field.classList.add("has-err");
+  }
+}
+function clearFieldErr(id) {
+  const err = document.getElementById("err-" + id);
+  const input = document.getElementById("c-" + id);
+  if (err) err.textContent = "";
+  if (input) {
+    const field = input.closest(".create-field");
+    if (field) field.classList.remove("has-err");
+  }
+}
+function clearAllFieldErrs() { FIELD_IDS.forEach(clearFieldErr); }
+
+/* ---------- 字段即时校验(前端口径为后端允许集的子集, 后端仍独立校验) ---------- */
+const USERNAME_RE = /^[A-Za-z0-9_]{3,32}$/;
+function validateUsername() {
+  const v = usernameInput.value;
+  if (!v.trim()) { showFieldErr("username", "请输入用户名"); return false; }
+  if (!USERNAME_RE.test(v)) {
+    showFieldErr("username", "用户名需为 3-32 位字母、数字或下划线"); return false;
+  }
+  clearFieldErr("username"); return true;
+}
+function validatePassword() {
+  const v = passwordInput.value;
+  if (!v) { showFieldErr("password", "请输入初始密码"); return false; }
+  if (v.length < 8 || !/[A-Za-z]/.test(v) || !/[0-9]/.test(v)) {
+    showFieldErr("password", "密码需至少 8 位，且同时包含字母和数字"); return false;
+  }
+  clearFieldErr("password"); return true;
+}
+function validateConfirm() {
+  if (!confirmInput.value) {
+    showFieldErr("confirm", "请再次输入初始密码"); return false;
+  }
+  clearFieldErr("confirm"); return true;
+}
+usernameInput.addEventListener("input", validateUsername);
+passwordInput.addEventListener("input", validatePassword);
+confirmInput.addEventListener("input", validateConfirm);
+
+function validateAll() {
+  const results = [validateUsername(), validatePassword(), validateConfirm()];
+  const inputs = [usernameInput, passwordInput, confirmInput];
+  const firstBad = inputs.find((el, i) => !results[i]);
+  if (firstBad) firstBad.focus();
+  return results.every(Boolean);
+}
+
+/* ---------- 角色与初始店铺联动 ---------- */
+/* admin 无业务店铺: 隐藏整组; member: 按单选联动名称输入（create 显示 / skip 隐藏清空） */
+const initStoreGroup = document.getElementById("init-store-group");
+const storeNameWrap = document.getElementById("store-name-wrap");
+const initStoreRadios = Array.from(document.querySelectorAll('input[name="init-store"]'));
+const initStoreChoice = () => {
+  const checked = initStoreRadios.find(r => r.checked);
+  return checked ? checked.value : "";
+};
+function syncStoreField() {
+  const isAdmin = roleInput.value === "admin";
+  initStoreGroup.style.display = isAdmin ? "none" : "";
+  const creating = initStoreChoice() === "create";
+  storeNameWrap.style.display = creating ? "" : "none";
+  storeInput.disabled = isAdmin || !creating;
+  if (!creating) { storeInput.value = ""; clearFieldErr("store"); }
+  document.getElementById("opt-create").classList.toggle("is-on", creating);
+  document.getElementById("opt-skip").classList.toggle("is-on", !creating && !!initStoreChoice());
+}
+initStoreRadios.forEach(r => r.addEventListener("change", syncStoreField));
+roleInput.addEventListener("change", syncStoreField);
+syncStoreField();
+
+function resetForm(keepResult) {
+  usernameInput.value = "";
+  passwordInput.value = "";
+  confirmInput.value = "";
+  roleInput.value = "member";
+  const defaultRadio = initStoreRadios.find(r => r.value === "create");
+  if (defaultRadio) defaultRadio.checked = true;
+  storeInput.value = "";
+  statusInput.value = "active";
+  clearAllFieldErrs();
+  syncStoreField();
+  checkMatch();
+  if (!keepResult) resultBox.innerHTML = "";
+  usernameInput.focus();
+}
+
+document.getElementById("btn-reset").onclick = () => resetForm(false);
+document.getElementById("btn-cancel").onclick = () => { location.href = "/users"; };
+
+document.getElementById("create-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!validateAll()) return;
+  /* 兜底比对: 即使公共组件异常, 不一致提交仍被拦截 */
+  if (passwordInput.value !== confirmInput.value) {
+    showFieldErr("confirm", "两次输入的密码不一致，请修改后重试");
+    confirmInput.focus();
+    return;
+  }
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+  const role = roleInput.value;
+  const status = statusInput.value;
+  /* member 必选其一（单选默认勾选“创建”，未经选择不提交）; create_store 显式携带 */
+  const choice = initStoreChoice();
+  if (role === "member" && !choice) {
+    showFieldErr("store", "请选择是否创建初始店铺");
+    return;
+  }
+  const creatingStore = role === "member" && choice === "create";
+  const storeName = storeInput.value.trim();
+  submitBtn.disabled = true;
+  submitBtn.textContent = "创建中…";
+  try {
+    const payload = { username, password, role, status };
+    if (role === "member") {
+      payload.create_store = creatingStore;
+      if (creatingStore && storeName) payload.store_name = storeName;
+    }
+    const r = await API.post("/api/users", payload);
+    const storeLine = r.role === "admin"
+      ? "管理员账号，无业务店铺"
+      : (r.store_id
+        ? `已创建初始店铺「${esc(r.store_name || "—")}」（店铺 ID: ${esc(r.store_id)}）`
+        : "未创建店铺（稍后分配）");
+    resultBox.innerHTML = `<div class="create-msg ok">` +
+      `<div>创建成功：<b>${esc(r.username)}</b>（${r.role === "admin" ? "管理员" : "成员"} · ${r.status === "active" ? "启用" : "停用"}）</div>` +
+      `<div class="ids">${storeLine}</div>` +
+      `<div class="ids">用户 ID: ${esc(r.user_id)}</div>` +
+      `<div><a href="/users">前往用户管理查看 →</a></div>` +
+      `</div>`;
+    resetForm(true);
+  } catch (e) {
+    const msg = e.message || "创建失败";
+    if (msg.includes("用户名")) showFieldErr("username", msg);
+    else if (msg.includes("密码")) showFieldErr("password", msg);
+    else if (msg.includes("店铺")) showFieldErr("store", msg);
+    else resultBox.innerHTML = `<div class="create-msg err">${esc(msg)}</div>`;
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "创建用户";
+  }
+});
+</script>
+</body>
+</html>

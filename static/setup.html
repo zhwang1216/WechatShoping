@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>系统初始化 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .setup-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px 16px; }
+  .setup-card { width: 460px; max-width: 100%; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 32px 28px; box-shadow: 0 4px 16px rgba(0,0,0,.06); }
+  .setup-card .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; justify-content: center; margin-bottom: 6px; }
+  .setup-card .sub { text-align: center; color: var(--text-light); font-size: 12px; margin-bottom: 20px; }
+  .setup-form { display: flex; flex-direction: column; gap: 14px; }
+  .setup-form label { font-size: 12px; color: var(--text-light); display: block; margin-bottom: 4px; }
+  .setup-form input[type=text], .setup-form input[type=password] { width: 100%; height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; font-size: 14px; box-sizing: border-box; }
+  .setup-form input:focus { outline: none; border-color: var(--primary); }
+  .hint { font-size: 12px; color: var(--text-light); }
+  #legacy-box { display: none; border: 1px solid var(--warning); background: #fffbeb; border-radius: 8px; padding: 12px; }
+  #legacy-box ul { margin: 8px 0 4px 18px; padding: 0; font-size: 12px; color: var(--text); max-height: 140px; overflow-y: auto; }
+  #legacy-box .ack { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; font-size: 13px; }
+  #legacy-box .ack input { margin-top: 2px; }
+  #setup-error { display: none; background: #fef2f2; color: var(--danger); border-radius: 6px; padding: 10px 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+  #setup-ok { display: none; background: #f0fdf4; color: var(--success); border-radius: 6px; padding: 14px 12px; font-size: 13px; line-height: 1.7; text-align: center; }
+  #setup-btn { height: 44px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="setup-wrap">
+  <div class="setup-card">
+    <div class="brand"><span class="logo">微</span>微信小店对账与利润核算系统</div>
+    <div class="sub">首次使用：一次性初始化管理员账号</div>
+
+    <div id="loading" class="hint" style="text-align:center;padding:20px 0">正在检查系统状态…</div>
+
+    <form class="setup-form" id="setup-form" style="display:none">
+      <div>
+        <label for="username">管理员账号</label>
+        <input id="username" type="text" autocomplete="username" placeholder="登录账号，3-32 位字母/数字/下划线">
+      </div>
+      <div>
+        <label for="password">密码</label>
+        <input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位，且同时包含字母和数字">
+        <div class="hint">至少 8 位，且同时包含字母和数字</div>
+      </div>
+      <div>
+        <label for="confirm">确认密码</label>
+        <input id="confirm" type="password" autocomplete="new-password" placeholder="再次输入密码">
+        <div class="pwd-match-hint" id="pwd-match" aria-live="polite"></div>
+      </div>
+      <div>
+        <label for="store-name">店铺名称（选填）</label>
+        <input id="store-name" type="text" placeholder="例如：某某的微信小店">
+      </div>
+
+      <div id="legacy-box">
+        <div style="font-size:13px;color:var(--warning);font-weight:600">检测到系统已有历史业务数据</div>
+        <div class="hint" style="color:var(--text)">以下历史数据文件将迁移到本次创建的管理员店铺目录：</div>
+        <ul id="legacy-files"></ul>
+        <label class="ack">
+          <input type="checkbox" id="ack-legacy">
+          <span>我确认将以上全部旧数据归属到本次创建的管理员店铺（迁移前自动备份，迁移失败自动回滚）</span>
+        </label>
+      </div>
+
+      <div id="setup-error"></div>
+      <button class="btn" id="setup-btn" type="submit">完成初始化</button>
+    </form>
+
+    <div id="setup-ok"></div>
+  </div>
+</div>
+
+<script src="/static/api.js"></script>
+<script>
+const form = document.getElementById("setup-form");
+const errBox = document.getElementById("setup-error");
+const okBox = document.getElementById("setup-ok");
+const btn = document.getElementById("setup-btn");
+const legacyBox = document.getElementById("legacy-box");
+let hasLegacy = false;
+
+setupPasswordToggle(document.getElementById("password"), "显示或隐藏密码");
+setupPasswordToggle(document.getElementById("confirm"), "显示或隐藏确认密码");
+bindPasswordMatch({
+  newInput: document.getElementById("password"),
+  confirmInput: document.getElementById("confirm"),
+  hintEl: document.getElementById("pwd-match"),
+  submitBtn: btn,
+});
+
+async function init() {
+  try {
+    const data = await API.get("/api/setup/status");
+    document.getElementById("loading").style.display = "none";
+    if (data.initialized) {
+      okBox.style.display = "block";
+      okBox.innerHTML = "系统已完成初始化。<br><a href=\"/login\">点此前往登录</a>";
+      return;
+    }
+    if (data.legacy_files && data.legacy_files.length) {
+      hasLegacy = true;
+      document.getElementById("legacy-files").innerHTML =
+        data.legacy_files.map(f => `<li>${esc(f)}</li>`).join("");
+      legacyBox.style.display = "block";
+    }
+    form.style.display = "flex";
+  } catch (e) {
+    document.getElementById("loading").textContent = e.message || "系统状态检查失败，请刷新重试";
+  }
+}
+
+form.addEventListener("submit", async e => {
+  e.preventDefault();
+  errBox.style.display = "none";
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  const confirm = document.getElementById("confirm").value;
+  const storeName = document.getElementById("store-name").value.trim();
+  if (!username || !password) {
+    showErr("请填写管理员账号和密码");
+    return;
+  }
+  if (password !== confirm) {
+    showErr("两次输入的密码不一致");
+    return;
+  }
+  if (hasLegacy && !document.getElementById("ack-legacy").checked) {
+    showErr("请先勾选确认旧数据归属后才能初始化");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "初始化中…";
+  try {
+    await API.post("/api/setup/init", {
+      username, password, confirm_password: confirm,
+      store_name: storeName || undefined,
+      acknowledge_legacy: hasLegacy,
+    });
+    form.style.display = "none";
+    okBox.style.display = "block";
+    okBox.innerHTML = "初始化完成，请使用管理员账号登录。<br><a href=\"/login\">点此前往登录</a>";
+  } catch (ex) {
+    showErr(ex.message || "初始化失败，请稍后重试");
+    btn.disabled = false;
+    btn.textContent = "完成初始化";
+  }
+});
+
+function showErr(msg) {
+  errBox.textContent = msg;
+  errBox.style.display = "block";
+}
+
+init();
+</script>
+</body>
+</html>

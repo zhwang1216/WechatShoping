@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>用户管理 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside class="app-sidebar" id="app-sidebar">
+  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
+  <nav>
+    <a href="/dashboard">经营总览</a>
+    <a href="/data-import">数据导入</a>
+    <a href="/orders">普通订单</a>
+    <a href="/refund-orders">退款订单</a>
+    <a href="/refund-details">退款明细</a>
+    <a href="/supplier-costs">供应商成本</a>
+    <a href="/reconciliation">对账成本</a>
+    <a href="/profit">利润核算</a>
+    <a href="/anomalies">异常处理</a>
+    <a href="/logs">操作日志</a>
+    <!--admin-nav-start-->
+    <button type="button" class="nav-group nav-group-current" data-nav-group="user-mgmt"
+            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
+    <div class="nav-submenu" id="nav-user-mgmt">
+      <a href="/users/create">创建用户</a>
+      <a href="/stores">店铺管理</a>
+      <a href="/users" class="active">用户管理</a>
+    </div>
+    <!--admin-nav-end-->
+  </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
+</aside>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<div class="app-main">
+<header class="topbar">
+  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
+  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
+  <div id="auth-area" class="auth-area"></div>
+</header>
+<div class="container">
+  <div class="page-title">用户管理</div>
+  <div class="page-desc">管理员可启用/停用账号、重置密码、编辑用户名、清除店铺数据、删除账号。用户名即登录账号，编辑用户名不影响密码、角色、状态与店铺归属；店铺归属管理（修改归属 / 标记待分配 / 迁移清点）已移至「店铺管理」页。管理员无法对本人账号执行停用、重置密码、清除数据或删除操作（编辑用户名除外）。</div>
+
+  <div class="card">
+    <div class="filter-grid">
+      <div class="filter-item"><label>用户名关键词</label><input id="f-username" placeholder="用户名包含"></div>
+      <div class="filter-item"><label>账号状态</label>
+        <select id="f-status">
+          <option value="">全部</option>
+          <option value="active">启用</option>
+          <option value="disabled">停用</option>
+        </select>
+      </div>
+      <div class="filter-item"><label>角色</label>
+        <select id="f-role">
+          <option value="">全部</option>
+          <option value="admin">管理员</option>
+          <option value="member">成员</option>
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button class="btn" id="btn-query" type="button">查询</button>
+        <button class="btn secondary" id="btn-reset" type="button">重置</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card table-card">
+    <div class="card-head"><h3 style="margin:0">用户列表</h3>
+      <div class="head-actions">
+        <span class="hint" id="table-hint"></span>
+        <button class="btn" id="btn-create-user" type="button" onclick="location.href='/users/create'">+ 创建用户</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="user-table">
+        <thead><tr>
+          <th>用户 ID</th><th>用户名</th><th>角色</th><th>状态</th><th>店铺</th><th>创建时间</th><th>最近登录</th><th>操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="table-state"></div>
+    <div class="pager" id="user-pager"></div>
+  </div>
+
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/modal.js"></script>
+<script>
+const fmtT = v => v ? String(v).replace("T", " ") : "—";
+
+/* 业务数据类别中文标签（与后端 CLEARABLE_DATA_FILES 对应, 不含 settings） */
+const DATA_LABELS = {
+  orders: "微信订单", refund_orders: "退款订单汇总", refund_details: "退款明细",
+  supplier_costs: "供应商成本", supplier_cost_items: "成本拆分明细",
+  reconciliation_results: "对账结果", profit_statements: "利润核算",
+  anomalies: "异常记录", export_records: "导出记录", import_records: "导入批次",
+  raw_records: "原始导入记录", ad_expenses: "广告花费",
+};
+
+let currentUserId = null;
+
+const STATE = { username: "", status: "", role: "", page: 1, size: 20 };
+
+function syncFilter() {
+  STATE.username = document.getElementById("f-username").value.trim();
+  STATE.status = document.getElementById("f-status").value;
+  STATE.role = document.getElementById("f-role").value;
+}
+
+function queryStr() {
+  const p = new URLSearchParams();
+  if (STATE.username) p.set("username", STATE.username);
+  if (STATE.status) p.set("status", STATE.status);
+  if (STATE.role) p.set("role", STATE.role);
+  p.set("page", STATE.page);
+  p.set("page_size", STATE.size);
+  return p.toString();
+}
+
+async function load() {
+  const state = document.getElementById("table-state");
+  const tbody = document.querySelector("#user-table tbody");
+  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  tbody.innerHTML = "";
+  try {
+    const [me, data] = await Promise.all([
+      API.get("/api/auth/me"), API.get(`/api/users?${queryStr()}`),
+    ]);
+    currentUserId = me.user_id;
+    state.innerHTML = "";
+    const pages = Math.max(1, Math.ceil(data.total / data.page_size));
+    document.getElementById("table-hint").textContent =
+      `共 ${data.total} 个用户 · 第 ${data.page}/${pages} 页`;
+    if (!data.users.length) {
+      state.innerHTML = `<div class="empty-state"><div class="icon">👥</div>暂无用户：当前筛选条件下没有匹配用户</div>`;
+      document.getElementById("user-pager").innerHTML = "";
+      return;
+    }
+    tbody.innerHTML = data.users.map(u => {
+      const isSelf = u.user_id === currentUserId;
+      const editBtn = `<button class="link-btn" data-act="rename" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}">编辑</button>`;
+      const actions = isSelf
+        ? `${editBtn}<span style="color:var(--text-light);font-size:12px">当前账号</span>`
+        : `${editBtn}
+           <button class="link-btn" data-act="toggle" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}" data-status="${esc(u.status)}">${u.status === "active" ? "停用" : "启用"}</button>
+           <button class="link-btn" data-act="reset" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}">重置密码</button>
+           <button class="link-btn" data-act="clear" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}" style="color:var(--danger)">清除数据</button>
+           <button class="link-btn" data-act="delete" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}" style="color:var(--danger)">删除账号</button>`;
+      return `<tr>
+      <td style="font-family:monospace;font-size:12px">${esc(u.user_id)}</td>
+      <td>${esc(u.username)}${isSelf ? ` <span class="badge blue">本人</span>` : ""}</td>
+      <td>${u.role === "admin" ? '<span class="badge blue">管理员</span>' : '<span class="badge gray">成员</span>'}</td>
+      <td>${u.status === "active" ? '<span class="badge green">启用</span>' : '<span class="badge red">停用</span>'}</td>
+      <td>${esc((u.store_names || []).filter(Boolean).join("、") || "—")}</td>
+      <td style="white-space:nowrap">${fmtT(u.created_at)}</td>
+      <td style="white-space:nowrap">${fmtT(u.last_login_at)}</td>
+      <td style="white-space:nowrap">${actions}</td>
+    </tr>`;
+    }).join("");
+    tbody.querySelectorAll("button[data-act]").forEach(b => {
+      b.onclick = () => {
+        if (b.dataset.act === "rename") {
+          openRenameUser(b.dataset.uid, b.dataset.name);
+        } else if (b.dataset.act === "toggle") {
+          confirmToggle(b.dataset.uid, b.dataset.name, b.dataset.status);
+        } else if (b.dataset.act === "reset") {
+          openResetPassword(b.dataset.uid, b.dataset.name);
+        } else if (b.dataset.act === "clear") {
+          openClearData(b.dataset.uid, b.dataset.name);
+        } else {
+          openDeleteUser(b.dataset.uid, b.dataset.name);
+        }
+      };
+    });
+    renderPager(document.getElementById("user-pager"), {
+      page: data.page, pages, total: data.total, size: data.page_size,
+    }, {
+      onPage: p => { STATE.page = p; load(); },
+      onSize: s => { STATE.size = s; STATE.page = 1; load(); },
+    });
+  } catch (e) {
+    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
+  }
+}
+
+document.getElementById("btn-query").onclick = () => { syncFilter(); STATE.page = 1; load(); };
+document.getElementById("btn-reset").onclick = () => {
+  STATE.username = ""; STATE.status = ""; STATE.role = ""; STATE.page = 1;
+  document.getElementById("f-username").value = "";
+  document.getElementById("f-status").value = "";
+  document.getElementById("f-role").value = "";
+  load();
+};
+document.getElementById("f-username").onkeydown = e => { if (e.key === "Enter") document.getElementById("btn-query").click(); };
+document.querySelector(".filter-grid").addEventListener("change", e => {
+  if (e.target.matches("select")) document.getElementById("btn-query").click();
+});
+
+/* 编辑用户名: 仅修改登录用户名（允许操作本人账号）; user_id/密码/角色/状态/店铺归属均不变 */
+const USERNAME_RE = /^[A-Za-z0-9_.\-]{3,32}$/;
+
+function openRenameUser(userId, username) {
+  closeModal();
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.id = "um-modal";
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h3>编辑用户名 - ${esc(username)}</h3>
+      <div class="modal-body">
+        <div style="font-size:13px;color:var(--text-light);margin-bottom:8px">用户 ID <b style="font-family:monospace">${esc(userId)}</b> 保持不变，密码、角色、状态与店铺归属均不受影响，仅修改登录用户名。修改后该用户需使用新用户名登录，已登录会话不受影响。</div>
+        <div><label>新用户名（登录账号）</label><input id="ru-input" autocomplete="off" placeholder="3-32 位字母/数字/下划线/连字符/点"></div>
+        <div class="modal-msg" id="ru-msg"></div>
+        <div class="modal-actions">
+          <button class="btn secondary" id="ru-cancel" type="button">取消</button>
+          <button class="btn" id="ru-ok" type="button" disabled>保存</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", e => { if (e.target === overlay) closeModal(); });
+  document.getElementById("ru-cancel").onclick = closeModal;
+  const input = document.getElementById("ru-input");
+  const okBtn = document.getElementById("ru-ok");
+  const msg = document.getElementById("ru-msg");
+  const sync = () => {
+    const v = input.value.trim();
+    if (v && v === username) {
+      msg.textContent = "新用户名与当前用户名相同，无需修改";
+      msg.style.display = "block";
+    } else if (v && !USERNAME_RE.test(v)) {
+      msg.textContent = "用户名需为 3-32 位字母、数字、下划线、连字符和点";
+      msg.style.display = "block";
+    } else {
+      msg.style.display = "none";
+    }
+    okBtn.disabled = !(USERNAME_RE.test(v) && v !== username);
+  };
+  input.oninput = sync;
+  input.onkeydown = e => { if (e.key === "Enter" && !okBtn.disabled) okBtn.click(); };
+  okBtn.onclick = async () => {
+    okBtn.disabled = true;
+    okBtn.textContent = "保存中…";
+    try {
+      const r = await API.post(`/api/users/${userId}/rename`, { new_username: input.value.trim() });
+      toast(`用户名已修改：${username} → ${r.username}`, "success");
+      closeModal();
+      load();
+    } catch (e) {
+      msg.textContent = e.message || "修改失败，请重试";
+      msg.style.display = "block";
+      okBtn.disabled = false;
+      okBtn.textContent = "保存";
+    }
+  };
+  input.focus();
+}
+
+function confirmToggle(userId, username, status) {
+  const action = status === "active" ? "disable" : "enable";
+  const verb = status === "active" ? "停用" : "启用";
+  confirmModal(`${verb}用户`, `确认${verb}用户「${username}」？${action === "disable" ? "停用后该用户全部会话立即失效。" : ""}`, async () => {
+    await API.post(`/api/users/${userId}/status`, { action });
+    toast(`已${verb}用户 ${username}`);
+    load();
+  });
+}
+
+function openResetPassword(userId, username) {
+  closeModal();
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.id = "um-modal";
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h3>重置密码 - ${esc(username)}</h3>
+      <div class="modal-body">
+        <div><label>新密码</label><input id="rp-new" type="password" placeholder="至少 8 位，含字母和数字"></div>
+        <div class="modal-msg" id="rp-msg"></div>
+        <div class="modal-actions">
+          <button class="btn secondary" id="rp-cancel" type="button">取消</button>
+          <button class="btn" id="rp-go" type="button">确认重置</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", e => { if (e.target === overlay) closeModal(); });
+  document.getElementById("rp-cancel").onclick = closeModal;
+  setupPasswordToggle(document.getElementById("rp-new"), "显示或隐藏新密码");
+  document.getElementById("rp-go").onclick = () => {
+    const newPwd = document.getElementById("rp-new").value;
+    const msg = document.getElementById("rp-msg");
+    msg.style.display = "none";
+    if (!newPwd) { msg.textContent = "请输入新密码"; msg.style.display = "block"; return; }
+    confirmModal("二次确认", `确认重置用户「${username}」的密码？该用户的所有会话将立即失效。`, async () => {
+      await API.post(`/api/users/${userId}/reset-password`, { new_password: newPwd });
+      toast(`已重置 ${username} 的密码，该用户的所有会话已失效`);
+      load();
+    });
+  };
+}
+
+/* 清除店铺数据: 先展示数据统计预览, 输入店铺名二次确认 */
+async function openClearData(userId, username) {
+  let summary;
+  try {
+    summary = await API.get(`/api/users/${userId}/store-data-summary`);
+  } catch (e) {
+    toast(e.message || "获取数据统计失败", "error");
+    return;
+  }
+  const stores = summary.stores || [];
+  if (!stores.length) {
+    confirmModal("清除店铺数据", `成员「${username}」名下没有店铺，无需清理。`, async () => {});
+    return;
+  }
+  const storeNames = stores.map(s => s.store_name).filter(Boolean);
+  const statsHtml = stores.map(s => {
+    const rows = Object.entries(s.categories || {})
+      .filter(([, n]) => typeof n === "number" && n > 0)
+      .map(([k, n]) => `<div style="display:flex;justify-content:space-between;padding:2px 0"><span>${esc(DATA_LABELS[k] || k)}</span><span style="font-family:monospace">${n} 条</span></div>`)
+      .join("");
+    const body = rows
+      ? `<div style="font-size:13px">${rows}</div>`
+      : `<div style="color:var(--text-light);font-size:13px">暂无业务数据记录</div>`;
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+      <div style="font-weight:600;margin-bottom:6px;font-size:13px">${esc(s.store_name)}（${esc(s.store_id)}）</div>
+      ${body}
+      <div style="font-size:12px;color:var(--text-light);margin-top:6px">待清理上传暂存文件：${s.upload_files || 0} 个</div>
+    </div>`;
+  }).join("");
+  const multi = stores.length > 1;
+  inputModal({
+    title: `清除店铺数据 - ${username}`,
+    bodyHtml: `
+      <div style="font-size:13px;line-height:1.7">将清空该成员店铺的<b>全部业务数据</b>（下方为当前统计）。操作前系统会自动创建整店快照备份，失败时自动回滚。</div>
+      ${statsHtml}
+      <div style="font-size:12px;color:var(--text-light);line-height:1.7">保留内容：账号与店铺记录、系统设置、操作日志与审计日志。清除后该成员的全部会话失效，需重新登录。</div>
+      ${multi ? `<div style="font-size:12px;color:var(--danger)">该成员名下有 ${stores.length} 家店铺，将全部清理，请输入任一店铺名称确认。</div>` : ""}
+    `,
+    expected: storeNames,
+    expectedLabel: "输入店铺名称以确认",
+    confirmText: "确认清除",
+    onOk: async (value) => {
+      const r = await API.post(`/api/users/${userId}/store-data-clear`,
+                               { confirm_store_name: value });
+      toast(r.message || `已清除 ${username} 的店铺数据`, "success");
+      load();
+    },
+  });
+}
+
+/* 删除账号: 选择是否同时清除店铺数据, 输入用户名二次确认 */
+function openDeleteUser(userId, username) {
+  inputModal({
+    title: `删除账号 - ${username}`,
+    bodyHtml: `
+      <div style="font-size:13px;line-height:1.7">删除后该账号将<b>无法登录</b>，其全部会话立即失效。请选择业务数据的处理方式：</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--text);cursor:pointer;margin-bottom:0">
+          <input type="radio" name="del-mode" value="keep" checked style="width:auto;height:auto;margin-top:3px">
+          <span><b>仅删除账号，保留业务数据</b>（推荐）：店铺数据完整保留、可继续追溯，不转移给其他成员。</span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--text);cursor:pointer;margin-bottom:0">
+          <input type="radio" name="del-mode" value="clear" style="width:auto;height:auto;margin-top:3px">
+          <span><b>删除账号并清除店铺数据</b>：先自动创建整店快照备份，再清空全部业务数据并删除店铺记录。</span>
+        </label>
+      </div>
+      <div style="font-size:12px;color:var(--text-light)">两种方式均会记录审计日志；清除方式的整店快照保留在备份目录中，可用于恢复。</div>
+    `,
+    expected: username,
+    expectedLabel: `输入用户名「${username}」以确认`,
+    confirmText: "确认删除",
+    onOk: async () => {
+      const mode = (document.querySelector('input[name="del-mode"]:checked') || {}).value || "keep";
+      const r = await API.post(`/api/users/${userId}/delete`, {
+        confirm_username: username, clear_store_data: mode === "clear",
+      });
+      toast(r.message || `已删除账号 ${username}`, "success");
+      load();
+    },
+  });
+}
+
+load();
+</script>
+</body>
+</html>
