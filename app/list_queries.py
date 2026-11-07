@@ -12,6 +12,7 @@ from decimal import Decimal
 from openpyxl import Workbook
 
 from .data_schemas import now_iso
+from .excel_export import append_row
 from .normalizer import money_str
 from .time_range import in_range
 
@@ -107,12 +108,12 @@ class SupplierCostQueryService:
         wb = Workbook()
         ws = wb.active
         ws.title = "供应商成本明细"
-        ws.append(headers)
+        append_row(ws, headers)
         for r in rows:
             cb = r.get("cost_breakdown") or {}
             p = r.get("product") or {}
             t = r.get("tracking") or {}
-            ws.append([
+            append_row(ws, [
                 r.get("main_order_id"), r.get("supplier_order_id"),
                 r.get("created_at"), t.get("ship_time"),
                 p.get("title"), p.get("quantity"),
@@ -236,9 +237,9 @@ class AnomalyQueryService:
         wb = Workbook()
         ws = wb.active
         ws.title = "异常记录"
-        ws.append(headers)
+        append_row(ws, headers)
         for r in rows:
-            ws.append([
+            append_row(ws, [
                 r.get("created_at"), r.get("exception_type"),
                 ANOMALY_SEVERITY_LABELS.get(r.get("severity"), r.get("severity")),
                 ANOMALY_STATUS_LABELS.get(r.get("status"), r.get("status")),

@@ -1,12 +1,22 @@
-"""Excel 读取与解析：SHA256、工作簿加载、工作表/表头识别、行迭代、预览"""
+"""Excel 读取与解析：SHA256、工作簿加载、工作表/表头识别、行迭代、预览
+
+支持两种 Excel 文件格式:
+- .xlsx (Excel 2007+, ZIP 容器, 魔数 b"PK") → openpyxl 直接读取
+- .xls  (Excel 97-2003, OLE2 复合文档, 魔数 b"\\xD0\\xCF\\x11\\xE0") → xlrd 读取后转为 openpyxl Workbook
+两种格式统一返回 openpyxl Workbook 对象, 下游解析逻辑无需区分。
+"""
 import hashlib
 import io
 from datetime import date, datetime
 
-from openpyxl import load_workbook
+import xlrd
+from openpyxl import Workbook, load_workbook
 
 from .errors import ExcelParseError
 from .import_schemas import normalize_header
+
+_XLSX_MAGIC = b"PK"
+_XLS_MAGIC = b"\xd0\xcf\x11\xe0"
 
 
 def compute_sha256(data):
@@ -15,17 +25,49 @@ def compute_sha256(data):
     return h.hexdigest()
 
 
+def _load_xls_as_workbook(data):
+    """用 xlrd 读取 .xls (BIFF8) 并构造 openpyxl Workbook, 保持下游接口一致。
+
+    日期单元格转为 datetime; 整数浮点转为 int 以与 openpyxl 行为对齐;
+    空单元格跳过以保持默认空值语义。
+    """
+    try:
+        book = xlrd.open_workbook(file_contents=data)
+    except Exception as e:
+        raise ExcelParseError(f"无法解析 .xls 文件: {e}")
+    wb = Workbook()
+    wb.remove(wb.active)
+    for sheet in book.sheets():
+        ws = wb.create_sheet(title=sheet.name)
+        for r in range(sheet.nrows):
+            for c in range(sheet.ncols):
+                ctype = sheet.cell_type(r, c)
+                if ctype == xlrd.XL_CELL_EMPTY:
+                    continue
+                val = sheet.cell_value(r, c)
+                if ctype == xlrd.XL_CELL_DATE:
+                    val = xlrd.xldate.xldate_as_datetime(val, book.datemode)
+                elif ctype == xlrd.XL_CELL_NUMBER and val == int(val):
+                    val = int(val)
+                ws.cell(row=r + 1, column=c + 1, value=val)
+    if not wb.sheetnames:
+        wb.create_sheet("Sheet1")
+    return wb
+
+
 def load_workbook_from_bytes(data):
     if not data:
         raise ExcelParseError("文件内容为空")
-    if data[:2] != b"PK":
-        raise ExcelParseError("不是有效的 .xlsx 文件（仅支持 Excel 2007+ 格式，不支持 .xls/CSV）")
-    try:
-        return load_workbook(io.BytesIO(data), data_only=True)
-    except ExcelParseError:
-        raise
-    except Exception as e:
-        raise ExcelParseError(f"无法解析 Excel 文件: {e}")
+    if data[:2] == _XLSX_MAGIC:
+        try:
+            return load_workbook(io.BytesIO(data), data_only=True)
+        except ExcelParseError:
+            raise
+        except Exception as e:
+            raise ExcelParseError(f"无法解析 .xlsx 文件: {e}")
+    if data[:4] == _XLS_MAGIC:
+        return _load_xls_as_workbook(data)
+    raise ExcelParseError("不是有效的 Excel 文件（支持 .xlsx 与 .xls 格式，不支持 CSV/其他）")
 
 
 def cell_display(value):

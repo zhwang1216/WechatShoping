@@ -37,7 +37,11 @@
   }
 
   function openChangePassword() {
-    closeModal();
+    /* 修改密码弹窗独立于 modal.js 的 #um-modal：先清理旧弹窗，避免重复点击叠加。
+       未引入 modal.js 的页面（多数列表页）不应因 closeModal 未定义而中断。 */
+    if (typeof closeModal === "function") closeModal();
+    const oldPwd = document.getElementById("pwd-modal");
+    if (oldPwd) oldPwd.remove();
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     overlay.id = "pwd-modal";

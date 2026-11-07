@@ -39,12 +39,63 @@ from openpyxl import Workbook
 
 from .data_schemas import now_iso
 from .errors import ProfitServiceError
+from .excel_export import append_row
 from .normalizer import money_str
 from .refund_view import build_refund_views, order_level_amount
-from .time_range import in_range
+from .time_range import MONTH_RE, in_range
 
-RULES_VERSION = "P1.1"
+# 演进策略（spec DFX 4.4.3 / 6.2.3，design.md 1.2.5）：
+# 后续若改变 UNSHIPPED_STATUSES / PENDING_REVIEW_STATUSES /
+# is_calculable_status 任一过滤规则逻辑，必须同步升级 RULES_VERSION 版本号，
+# 并在 order_profit 与 calculation_run 记录中体现新版本，确保历史核算结果可追溯。
+RULES_VERSION = "P1.3"
 PAGE_SIZES = (20, 50, 100)
+
+UNSHIPPED_STATUSES = {"pending_shipment", "paid", "pending_payment"}
+PENDING_REVIEW_STATUSES = {"unknown"}
+UNSHIPPED_SHIP_STATUS = "unshipped"
+SHIPPED_SHIP_STATUS = "shipped"
+
+
+def is_reconciliation_scope(order_status, ship_status=None):
+    """对账统计范围：有商品发货列时须为「已发货」；无该列时按订单状态排除未发货/待核对（向后兼容）。"""
+    if ship_status is not None:
+        return ship_status == SHIPPED_SHIP_STATUS
+    if order_status is None:
+        return False
+    if order_status in UNSHIPPED_STATUSES:
+        return False
+    if order_status in PENDING_REVIEW_STATUSES:
+        return False
+    return True
+
+
+def is_unshipped_order(order_status, ship_status=None):
+    """导入剔除：商品发货=未发货，或无商品发货列且订单状态为未发货类。"""
+    if ship_status == UNSHIPPED_SHIP_STATUS:
+        return True
+    if ship_status in (SHIPPED_SHIP_STATUS, "partial_shipped"):
+        return False
+    if ship_status is not None:
+        return False
+    return order_status in UNSHIPPED_STATUSES
+
+
+def is_calculable_status(order_status, ship_status=None):
+    """可核算 = 非 未发货 且 非 待核对，供 run_calculation/get_summary/get_daily_trends 三处 scope 构建统一调用。
+
+    ship_status == "unshipped"（商品发货=未发货）时直接排除，优先于 order_status 判断。
+    ship_status 为 None（字段缺失）时不影响判断，向后兼容历史数据。
+    """
+    if ship_status == UNSHIPPED_SHIP_STATUS:
+        return False
+    if order_status is None:
+        return False
+    if order_status in UNSHIPPED_STATUSES:
+        return False
+    if order_status in PENDING_REVIEW_STATUSES:
+        return False
+    return True
 
 PROFIT_STATUS_LABELS = {
     "calculated": "已计算",
@@ -57,6 +108,7 @@ COST_MATCH_LABELS = {
     "parts_missing": "待核对（供应商分项缺失）",
     "suspected": "疑似匹配待确认",
     "unmatched": "未匹配",
+    "manual": "手工录入（货品+快递，待入库覆盖）",
     "cost_missing": "成本总金额缺失",
 }
 FIELD_SOURCES = {
@@ -210,10 +262,25 @@ class ProfitService:
                 orders_by_id.setdefault(o["order_id"], []).append(o)
 
         scope = []
+        excluded_unshipped = 0
+        excluded_pending_review = 0
+        excluded_missing_status = 0
         for oid, wlines in orders_by_id.items():
             ot = next((l.get("order_time") for l in wlines
                        if l.get("order_time")), None)
             if not in_range(ot, start, end):
+                continue
+            first_status = next((l.get("order_status") for l in wlines
+                                 if l.get("order_status")), None)
+            first_ship = next((l.get("ship_status") for l in wlines
+                               if l.get("ship_status")), None)
+            if not is_calculable_status(first_status, first_ship):  # 排除未发货/待核对订单
+                if first_ship == UNSHIPPED_SHIP_STATUS or first_status in UNSHIPPED_STATUSES:
+                    excluded_unshipped += 1
+                elif first_status is None:
+                    excluded_missing_status += 1
+                else:
+                    excluded_pending_review += 1
                 continue
             scope.append(oid)
 
@@ -284,6 +351,18 @@ class ProfitService:
             "rules_version": RULES_VERSION,
             "statistics": run_record["statistics"],
         }, operator=operator)
+        excluded_total = (excluded_unshipped + excluded_pending_review
+                          + excluded_missing_status)
+        if excluded_total > 0:
+            self.op_log.append("profit.calculate.excluded_summary", detail={
+                "calculation_id": calc_id, "start": start, "end": end,
+                "rules_version": RULES_VERSION,
+                "excluded": {
+                    "unshipped": excluded_unshipped,
+                    "pending_review": excluded_pending_review,
+                    "missing_status": excluded_missing_status,
+                },
+            }, operator=operator)
         return summary
 
     def _calc_order(self, oid, wlines, recon, refund_view, cost_by_id,
@@ -355,6 +434,18 @@ class ProfitService:
             cost_match_status = "parts_missing"
         else:
             cost_match_status = "matched"
+        # 未匹配订单的手工成本：总成本 = 货品 + 快递。
+        # 已有供应商入库记录时不走这里，入库金额优先。
+        manual = {} if sup_records else ((recon or {}).get("manual_cost") or {})
+        if manual.get("total_amount") is not None:
+            supplier_total = _dec(manual["total_amount"])
+            cost_state = "ok"
+            product_cost = _dec(manual.get("product_amount"))
+            courier_fee = _dec(manual.get("courier_amount"))
+            product_gross = product_sales - product_cost
+            cost_match_status = "manual"
+            parts["product_supply_cost"] = money_str(product_cost)
+            parts["courier_fee"] = money_str(courier_fee)
         # 商品信息（明细表展示；多行拼接）
         titles = [t for t in dict.fromkeys(
             (l.get("product") or {}).get("title") for l in wlines
@@ -555,6 +646,12 @@ class ProfitService:
                        if l.get("order_time")), None)
             if not in_range(ot, start, end):
                 continue
+            first_status = next((l.get("order_status") for l in wlines
+                                 if l.get("order_status")), None)
+            first_ship = next((l.get("ship_status") for l in wlines
+                               if l.get("ship_status")), None)
+            if not is_calculable_status(first_status, first_ship):  # 排除未发货/待核对订单
+                continue
             scope.append(oid)
 
         empty = {
@@ -694,6 +791,104 @@ class ProfitService:
             "policies": self._policies(),
         }
 
+    def get_daily_trends(self, start=None, end=None):
+        """按订单下单日期聚合的经营趋势（供经营总览折线图使用）。
+        聚合口径与 get_summary 一致：按 order_time 日期(YYYY-MM-DD)分组，
+        退款/成本/利润均归属原订单下单日；无数据日不补零(仅返回有订单的日期)。"""
+        orders = self.repo.read("orders")["records"]
+        orders_by_id = {}
+        for o in orders:
+            if o.get("order_id"):
+                orders_by_id.setdefault(o["order_id"], []).append(o)
+
+        day_groups = {}
+        for oid, wlines in orders_by_id.items():
+            ot = next((l.get("order_time") for l in wlines
+                       if l.get("order_time")), None)
+            if not in_range(ot, start, end):
+                continue
+            first_status = next((l.get("order_status") for l in wlines
+                                 if l.get("order_status")), None)
+            first_ship = next((l.get("ship_status") for l in wlines
+                               if l.get("ship_status")), None)
+            if not is_calculable_status(first_status, first_ship):  # 排除未发货/待核对订单
+                continue
+            day = (ot or "")[:10]
+            day_groups.setdefault(day, []).append(oid)
+
+        empty = {"dates": [], "order_count": [], "actual_received": [],
+                 "refund_success": [], "supplier_cost": [],
+                 "contribution_profit": []}
+        if not day_groups:
+            return empty
+
+        refund_by_order = {v["order_id"]: v
+                           for v in build_refund_views(orders)}
+        recons = self.repo.read("reconciliation_results")["records"]
+        recon_by_order = {}
+        for r in recons:
+            if r.get("record_type") == "order_match" and r.get("order_id"):
+                recon_by_order[r["order_id"]] = r
+        latest = self._latest_run()
+        profit_by_order = {}
+        if latest:
+            latest_calc_id = latest.get("record_id")
+            for r in self.repo.read("profit_statements")["records"]:
+                if (r.get("record_type") == "order_profit"
+                        and r.get("calculation_id") == latest_calc_id
+                        and r.get("order_id")):
+                    profit_by_order[r["order_id"]] = r
+
+        dates = sorted(day_groups.keys())
+        order_counts = []
+        received_list = []
+        refund_list = []
+        cost_list = []
+        profit_list = []
+        for day in dates:
+            oids = day_groups[day]
+            order_counts.append(len(oids))
+            recv = Decimal("0")
+            for oid in oids:
+                wlines = orders_by_id[oid]
+                received, _ = order_level_amount(
+                    wlines, lambda l: (l.get("amounts") or {}).get(
+                        "actual_received_amount"))
+                if received is not None:
+                    recv += _dec(received)
+            received_list.append(money_str(recv))
+            ref = sum((_dec(
+                (refund_by_order[oid].get("refund_by_status") or {}).get(
+                    "success"))
+                for oid in oids if oid in refund_by_order), Decimal("0"))
+            refund_list.append(money_str(ref))
+            cost = Decimal("0")
+            for oid in oids:
+                recon = recon_by_order.get(oid)
+                if not recon:
+                    continue
+                c = (recon.get("cost") or {}).get("total_amount")
+                if c is not None:
+                    cost += _dec(c)
+            cost_list.append(money_str(cost))
+            prof = sum((_dec(
+                (profit_by_order.get(oid, {}).get("amounts") or {}).get(
+                    "operating_contribution_profit"))
+                for oid in oids
+                if oid in profit_by_order
+                and profit_by_order[oid].get("profit_status") in CALCULATED_LIKE),
+                Decimal("0"))
+            profit_list.append(money_str(prof))
+
+        return {
+            "dates": dates,
+            "order_count": order_counts,
+            "actual_received": received_list,
+            "refund_success": refund_list,
+            "supplier_cost": cost_list,
+            "contribution_profit": profit_list,
+        }
+
     # ==================== 查询与导出 ====================
     def _latest_run(self):
         runs = [r for r in self.repo.read("profit_statements")["records"]
@@ -703,6 +898,33 @@ class ProfitService:
         return max(runs, key=lambda r: (r.get("created_at") or "",
                                         r.get("record_id") or ""))
 
+    def _order_profits_effective(self):
+        """各订单取最新核算结果（导入/重算常按时间片段执行，按月汇总须跨批次合并）。"""
+        stmts = self.repo.read("profit_statements")["records"]
+        run_at = {
+            r["record_id"]: r.get("created_at") or ""
+            for r in stmts if r.get("record_type") == "calculation_run"
+        }
+
+        def sort_key(rec):
+            return (
+                run_at.get(rec.get("calculation_id"), ""),
+                rec.get("created_at") or "",
+                rec.get("record_id") or "",
+            )
+
+        by_order = {}
+        for r in stmts:
+            if r.get("record_type") != "order_profit":
+                continue
+            oid = r.get("order_id")
+            if not oid:
+                continue
+            prev = by_order.get(oid)
+            if prev is None or sort_key(r) > sort_key(prev):
+                by_order[oid] = r
+        return list(by_order.values())
+
     def list_results(self, start=None, end=None, order_id=None,
                      profit_status=None, calc_id=None, page=1, size=50):
         target = calc_id or (self._latest_run() or {}).get("record_id")
@@ -711,6 +933,11 @@ class ProfitService:
         if target:
             records = [r for r in records
                        if r.get("calculation_id") == target]
+        latest_order_month = ""
+        for r in records:
+            month = (r.get("order_time") or "")[:7]
+            if MONTH_RE.match(month) and month > latest_order_month:
+                latest_order_month = month
         rows = []
         for r in records:
             if order_id and r.get("order_id") != order_id:
@@ -733,7 +960,128 @@ class ProfitService:
             "calculation_id": target,
             "has_calculation": bool(target),
             "latest_run": self._latest_run(),
+            "latest_order_month": latest_order_month or None,
         }
+
+    def calculable_order_months(self, start=None, end=None):
+        """当前店铺订单中可核算订单涉及到的自然月（用于每月盈利空数据诊断）。"""
+        by_id = {}
+        for o in self.repo.read("orders")["records"]:
+            if o.get("order_id"):
+                by_id.setdefault(o["order_id"], []).append(o)
+        months = set()
+        for wlines in by_id.values():
+            ot = next((l.get("order_time") for l in wlines if l.get("order_time")), None)
+            if not in_range(ot, start, end):
+                continue
+            status = next((l.get("order_status") for l in wlines
+                           if l.get("order_status")), None)
+            ship = next((l.get("ship_status") for l in wlines
+                         if l.get("ship_status")), None)
+            if not is_calculable_status(status, ship):
+                continue
+            month = (ot or "")[:7]
+            if MONTH_RE.match(month or ""):
+                months.add(month)
+        return sorted(months)
+
+    def monthly_operating(self, start=None, end=None):
+        """按订单下单月份汇总最新核算：销售笔数、销售额、货品成本、快递成本、技术服务费、退款金额。
+
+        销售额取商品实际价格合计。货品或快递成本缺失的订单不按 0 计入合计，只增加待核对笔数。
+        技术服务费按微信订单下单月份统计，同一订单只计一次，未填写的按 0。
+        退款金额取已成功退款（部分退款、全额退款），处理中和已关闭的不扣除。
+        """
+        records = self._order_profits_effective()
+        buckets = {}
+        for r in records:
+            ot = r.get("order_time")
+            if not in_range(ot, start, end):
+                continue
+            month = (ot or "")[:7]
+            if not MONTH_RE.match(month or ""):
+                continue
+            bucket = buckets.setdefault(month, {
+                "order_count": 0,
+                "sales": Decimal("0"),
+                "product": Decimal("0"),
+                "courier": Decimal("0"),
+                "refund": Decimal("0"),
+                "product_missing": 0,
+                "courier_missing": 0,
+            })
+            bucket["order_count"] += 1
+            amounts = r.get("amounts") or {}
+            sales = amounts.get("product_sales_amount")
+            if sales is not None:
+                bucket["sales"] += _dec(sales)
+            product = amounts.get("product_cost")
+            if product is not None:
+                bucket["product"] += _dec(product)
+            else:
+                bucket["product_missing"] += 1
+            courier = amounts.get("courier_fee")
+            if courier is not None:
+                bucket["courier"] += _dec(courier)
+            else:
+                bucket["courier_missing"] += 1
+            bucket["refund"] += _dec(amounts.get("refund_success_amount"))
+        order_tech = self._order_tech_by_month(start, end)
+        months = []
+        for month in sorted(set(buckets) | set(order_tech)):
+            bucket = buckets.get(month) or {
+                "order_count": order_tech[month][0],
+                "sales": Decimal("0"),
+                "product": Decimal("0"),
+                "courier": Decimal("0"),
+                "refund": Decimal("0"),
+                "product_missing": 0,
+                "courier_missing": 0,
+            }
+            tech = order_tech.get(month, (0, Decimal("0")))[1]
+            months.append({
+                "month": month,
+                "order_count": bucket["order_count"],
+                "sales_amount": money_str(bucket["sales"]),
+                "product_cost_total": money_str(bucket["product"]),
+                "courier_fee_total": money_str(bucket["courier"]),
+                "technical_service_fee": money_str(tech),
+                "refund_amount": money_str(bucket["refund"]),
+                "product_cost_missing_count": bucket["product_missing"],
+                "courier_fee_missing_count": bucket["courier_missing"],
+            })
+        return {"has_calculation": bool(self._latest_run()), "months": months}
+
+    def _order_tech_by_month(self, start=None, end=None):
+        """按订单下单月份统计技术服务费。同一订单多行只取订单级金额一次。"""
+        by_id = {}
+        for order in self.repo.read("orders")["records"]:
+            oid = order.get("order_id")
+            if oid:
+                by_id.setdefault(oid, []).append(order)
+        totals = {}
+        for lines in by_id.values():
+            order_time = next((line.get("order_time") for line in lines
+                               if line.get("order_time")), None)
+            if not in_range(order_time, start, end):
+                continue
+            status = next((line.get("order_status") for line in lines
+                           if line.get("order_status")), None)
+            ship = next((line.get("ship_status") for line in lines
+                         if line.get("ship_status")), None)
+            if not is_calculable_status(status, ship):
+                continue
+            month = (order_time or "")[:7]
+            if not MONTH_RE.match(month or ""):
+                continue
+            tech, _ = order_level_amount(
+                lines, lambda line: (line.get("amounts") or {}).get(
+                    "technical_service_fee"))
+            count, amount = totals.get(month, (0, Decimal("0")))
+            if tech is not None:
+                amount += _dec(tech)
+            totals[month] = (count + 1, amount)
+        return totals
 
     def export_excel(self, operator="admin", include_summary_row=True,
                      stats_sink=None, **filters):
@@ -801,9 +1149,9 @@ class ProfitService:
         wb = Workbook()
         ws = wb.active
         ws.title = "订单利润明细"
-        ws.append(headers)
+        append_row(ws, headers)
         for r in rows:
-            ws.append(row_of(r))
+            append_row(ws, row_of(r))
         if include_summary_row:
             notes = []
             pc_missing = statistics.get("product_cost_missing_count")
@@ -816,10 +1164,11 @@ class ProfitService:
             summary_row[0] = "合计"
             summary_row[1] = f"共 {len(rows)} 单"
             summary_row[3] = "；".join(notes) if notes else None
+            summary_row[12] = _dec(statistics.get("technical_service_fee"))
             summary_row[22] = _dec(statistics.get("product_cost_total"))
             summary_row[23] = _dec(statistics.get("courier_fee_total"))
             summary_row[24] = _dec(statistics.get("composite_cost_total"))
-            ws.append(summary_row)
+            append_row(ws, summary_row)
         for col in (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 23, 24, 25):
             for cell in ws.iter_cols(min_col=col, max_col=col, min_row=2):
                 for c in cell:
@@ -854,11 +1203,9 @@ class ProfitService:
                  "product_cost_total": Decimal("0"),
                  "courier_fee_total": Decimal("0"),
                  "composite_cost_total": Decimal("0"),
+                 "technical_service_fee": Decimal("0"),
                  "product_cost_missing_count": 0,
-                 "courier_fee_missing_count": 0,
-                 "net_revenue_total": Decimal("0"),
-                 "technical_service_fee_total": Decimal("0"),
-                 "subsidy_credited_total": Decimal("0")}
+                 "courier_fee_missing_count": 0}
         for r in rows:
             st = r.get("profit_status")
             if st in stats:
@@ -868,11 +1215,6 @@ class ProfitService:
                 stats["profit_total"] += _dec(
                     (r.get("amounts") or {}).get(
                         "operating_contribution_profit"))
-                stats["net_revenue_total"] += _dec(a.get("net_revenue"))
-                stats["technical_service_fee_total"] += _dec(
-                    a.get("technical_service_fee"))
-                stats["subsidy_credited_total"] += _dec(
-                    a.get("platform_subsidy_credited"))
             unmatched = r.get("cost_match_status") == "unmatched"
             pc = a.get("product_cost")
             if pc is not None:
@@ -887,28 +1229,9 @@ class ProfitService:
             cc = a.get("composite_cost")
             if cc is not None:
                 stats["composite_cost_total"] += _dec(cc)
-        # 成本核对：综合成本 − 产品成本 − 快递费 = 其他分项（泡沫耗材费等）。
-        # 综合成本仍以供应商"总金额"为唯一扣减口径，此处仅用于页面核对展示。
-        stats["composite_other_parts_total"] = money_str(
-            stats["composite_cost_total"] - stats["product_cost_total"]
-            - stats["courier_fee_total"])
-        # 利润率 = 可计算订单贡献利润 ÷ 同口径净收入合计（净收入 > 0 才计算）
-        margin = None
-        margin_blocked = None
-        calculated_like_count = sum(
-            1 for r in rows if r.get("profit_status") in CALCULATED_LIKE)
-        if calculated_like_count > 0:
-            if stats["net_revenue_total"] > 0:
-                margin = (stats["profit_total"]
-                          / stats["net_revenue_total"] * Decimal("100")) \
-                    .quantize(Decimal("0.01"))
-            else:
-                margin_blocked = "NET_REVENUE_NOT_POSITIVE"
-        stats["profit_margin"] = f"{margin}%" if margin is not None else None
-        stats["profit_margin_blocked_reason"] = margin_blocked
-        stats["profit_margin_blocked_label"] = (
-            MARGIN_BLOCKED_LABELS.get(margin_blocked)
-            if margin_blocked else None)
+            tech = a.get("technical_service_fee")
+            if tech is not None:
+                stats["technical_service_fee"] += _dec(tech)
         stats["profit_total"] = money_str(stats["profit_total"])
         stats["product_cost_total"] = money_str(
             stats["product_cost_total"])
@@ -916,11 +1239,8 @@ class ProfitService:
             stats["courier_fee_total"])
         stats["composite_cost_total"] = money_str(
             stats["composite_cost_total"])
-        stats["net_revenue_total"] = money_str(stats["net_revenue_total"])
-        stats["technical_service_fee_total"] = money_str(
-            stats["technical_service_fee_total"])
-        stats["subsidy_credited_total"] = money_str(
-            stats["subsidy_credited_total"])
+        stats["technical_service_fee"] = money_str(
+            stats["technical_service_fee"])
         return stats
 
     def _merge_anomalies(self, calc_id, fresh):

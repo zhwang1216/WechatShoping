@@ -363,7 +363,9 @@ class TestImportStorePicker(unittest.TestCase):
         # 新弹窗与状态机已就位
         for token in ("openStorePicker", "uploadTask", "选择导入店铺",
                       "请先选择目标店铺", "/static/modal.js",
-                      "确认并选择文件"):
+                      "确认选择",              # 改：按钮文案从"确认并选择文件"改为"确认选择"
+                      "file-info-bar",         # 新增：文件信息展示区
+                      "handleFileSelected"):   # 新增：编排函数
             self.assertIn(token, html, token)
         # member 视角同样可访问
         st, html, _ = self.a.get_page("/data-import")

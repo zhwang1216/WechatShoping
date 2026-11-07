@@ -5,34 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>系统初始化 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
-<style>
-  .setup-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px 16px; }
-  .setup-card { width: 460px; max-width: 100%; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 32px 28px; box-shadow: 0 4px 16px rgba(0,0,0,.06); }
-  .setup-card .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; justify-content: center; margin-bottom: 6px; }
-  .setup-card .sub { text-align: center; color: var(--text-light); font-size: 12px; margin-bottom: 20px; }
-  .setup-form { display: flex; flex-direction: column; gap: 14px; }
-  .setup-form label { font-size: 12px; color: var(--text-light); display: block; margin-bottom: 4px; }
-  .setup-form input[type=text], .setup-form input[type=password] { width: 100%; height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; font-size: 14px; box-sizing: border-box; }
-  .setup-form input:focus { outline: none; border-color: var(--primary); }
-  .hint { font-size: 12px; color: var(--text-light); }
-  #legacy-box { display: none; border: 1px solid var(--warning); background: #fffbeb; border-radius: 8px; padding: 12px; }
-  #legacy-box ul { margin: 8px 0 4px 18px; padding: 0; font-size: 12px; color: var(--text); max-height: 140px; overflow-y: auto; }
-  #legacy-box .ack { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; font-size: 13px; }
-  #legacy-box .ack input { margin-top: 2px; }
-  #setup-error { display: none; background: #fef2f2; color: var(--danger); border-radius: 6px; padding: 10px 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
-  #setup-ok { display: none; background: #f0fdf4; color: var(--success); border-radius: 6px; padding: 14px 12px; font-size: 13px; line-height: 1.7; text-align: center; }
-  #setup-btn { height: 44px; font-size: 14px; }
-</style>
 </head>
 <body>
-<div class="setup-wrap">
-  <div class="setup-card">
+<div class="auth-wrap">
+  <div class="auth-card wide">
     <div class="brand"><span class="logo">微</span>微信小店对账与利润核算系统</div>
     <div class="sub">首次使用：一次性初始化管理员账号</div>
 
-    <div id="loading" class="hint" style="text-align:center;padding:20px 0">正在检查系统状态…</div>
+    <div id="loading" class="form-hint" style="text-align:center;padding:20px 0">正在检查系统状态…</div>
 
-    <form class="setup-form" id="setup-form" style="display:none">
+    <form class="auth-form" id="setup-form" style="display:none">
       <div>
         <label for="username">管理员账号</label>
         <input id="username" type="text" autocomplete="username" placeholder="登录账号，3-32 位字母/数字/下划线">
@@ -40,7 +22,7 @@
       <div>
         <label for="password">密码</label>
         <input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位，且同时包含字母和数字">
-        <div class="hint">至少 8 位，且同时包含字母和数字</div>
+        <div class="form-hint">至少 8 位，且同时包含字母和数字</div>
       </div>
       <div>
         <label for="confirm">确认密码</label>
@@ -52,9 +34,9 @@
         <input id="store-name" type="text" placeholder="例如：某某的微信小店">
       </div>
 
-      <div id="legacy-box">
+      <div id="legacy-box" class="legacy-box">
         <div style="font-size:13px;color:var(--warning);font-weight:600">检测到系统已有历史业务数据</div>
-        <div class="hint" style="color:var(--text)">以下历史数据文件将迁移到本次创建的管理员店铺目录：</div>
+        <div class="form-hint" style="color:var(--text)">以下历史数据文件将迁移到本次创建的管理员店铺目录：</div>
         <ul id="legacy-files"></ul>
         <label class="ack">
           <input type="checkbox" id="ack-legacy">
@@ -62,11 +44,11 @@
         </label>
       </div>
 
-      <div id="setup-error"></div>
-      <button class="btn" id="setup-btn" type="submit">完成初始化</button>
+      <div id="setup-error" class="auth-error"></div>
+      <button class="btn auth-btn" id="setup-btn" type="submit">完成初始化</button>
     </form>
 
-    <div id="setup-ok"></div>
+    <div id="setup-ok" class="auth-ok"></div>
   </div>
 </div>
 

@@ -2,43 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>退款订单 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard">经营总览</a>
-    <a href="/data-import">数据导入</a>
-    <a href="/orders">普通订单</a>
-    <a href="/refund-orders" class="active">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation">对账成本</a>
-    <a href="/profit">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create">创建用户</a>
-      <a href="/stores">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
+<!--@app-shell-->
   <div class="page-title">退款订单</div>
   <div class="page-desc">展示所有存在退款记录的订单（同一原订单仅一行汇总，多笔退款在详情逐笔展示）。月份筛选默认按退款申请时间归属；退款申请时间缺失时回退下单时间（跨月退款不漏记），成功退款金额另按退款成功时间单独统计。</div>
 
@@ -112,229 +81,99 @@
   </div>
 </div>
 
-<!-- 订单详情模态 -->
-<div class="modal-mask" id="detail-modal">
-  <div class="modal">
-    <div class="modal-head"><h3 id="detail-title">退款订单详情</h3><button class="modal-close" onclick="document.getElementById('detail-modal').classList.remove('show')">×</button></div>
-    <div class="modal-body" id="detail-body"></div>
-  </div>
-</div>
-
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/common_table.js"></script>
+<script src="/static/list_page.js"></script>
+<script src="/static/modal.js"></script>
+<script src="/static/order_detail.js"></script>
 <script src="/static/auth_nav.js"></script>
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
 <script src="/static/store_scope.js"></script>
 <script>
-const STATE = { page: 1, size: 50 };
-
-const MF = new MonthFilter({
-  container: "month-filter",
-  timeLabel: "退款申请时间（缺失回退下单时间）",
-  onChange: () => { STATE.page = 1; load(); },
-});
-
-const SS = new StoreScope({
-  container: "store-scope",
-  onChange: () => { STATE.page = 1; load(); },
-});
-
 const TIME_FIELD_LABEL = {
   apply_time: "退款申请时间（缺失回退下单时间）",
   success_time: "退款成功时间",
   order_time: "下单时间",
 };
 
-function queryStr() {
-  const p = new URLSearchParams();
-  p.set("page", STATE.page); p.set("page_size", STATE.size);
-  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
-  SS.appendTo(p);
-  const v = id => document.getElementById(id).value.trim();
-  if (v("f-order-id")) p.set("order_id", v("f-order-id"));
-  if (v("f-keyword")) p.set("keyword", v("f-keyword"));
-  if (v("f-status")) p.set("status", v("f-status"));
-  p.set("time_field", v("f-time-field"));
-  if (v("f-min")) p.set("min_amount", v("f-min"));
-  if (v("f-max")) p.set("max_amount", v("f-max"));
-  p.set("order_by", v("f-order-by")); p.set("order_dir", v("f-order-dir"));
-  return p.toString();
-}
-
-async function load() {
-  const state = document.getElementById("table-state");
-  const tbody = document.querySelector("#refund-table tbody");
-  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
-  tbody.innerHTML = "";
-  try {
-    const data = await API.get(`/api/refund-orders?${queryStr()}`);
-    renderStats(data.statistics);
-    state.innerHTML = "";
-    if (!data.orders.length) {
-      state.innerHTML = `<div class="empty-state"><div class="icon">🔄</div>暂无数据：当前筛选条件下没有退款订单<br><span style="font-size:12px">可先在「数据导入」页导入微信订单 Excel，或切换月份/时间口径</span></div>`;
-    } else {
-      tbody.innerHTML = data.orders.map(r => {
-        const rf = r.refund, bs = r.refund_by_status;
-        const applyT = rf.refund_apply_time;
-        const fallback = rf.refund_apply_time_source === "order_time_fallback";
-        return `<tr>
-          <td>${esc(r.order_id)}</td>
-          <td>${fmtTime(r.order_time)}</td>
-          <td>${applyT
-              ? `<span ${fallback ? `title="退款申请时间缺失，已回退下单时间" style="color:var(--warning)"` : ""}>${fmtTime(applyT)}${fallback ? " ⚠" : ""}</span>`
-              : "—"}</td>
-          <td>${orderStatusBadge(r.order_status)}</td>
-          <td>${refundStatusBadge(rf.refund_status)}</td>
-          <td class="num"><b>${fmtMoney(rf.refund_amount)}</b></td>
-          <td class="num" style="color:var(--success)">${fmtMoney(bs.success)}</td>
-          <td class="num" style="color:var(--warning)">${fmtMoney(bs.pending)}</td>
-          <td class="num" style="color:var(--text-light)">${fmtMoney(bs.closed)}</td>
-          <td class="num">${rf.refund_count}</td>
-          <td>${rf.refund_amount_granularity === "unknown"
-              ? '<span class="badge orange">粒度待核对</span>'
-              : '<span class="badge gray">商品行级</span>'}</td>
-          <td>${statusSourceBadge(rf.status_source)}</td>
-          <td class="num">${fmtMoney(r.amounts.actual_received_amount)}</td>
-          <td>${r.pending_review ? '<span class="badge red">待核对</span>' : '—'}</td>
-          <td class="col-op"><button class="link-btn" onclick="showDetail('${esc(r.order_id)}')">详情</button></td>
-        </tr>`;
-      }).join("");
-    }
-    document.getElementById("table-hint").textContent = data.total ? `第 ${data.page}/${data.pages} 页` : "";
-    renderPager(document.getElementById("pager"), data, {
-      onPage: p => { STATE.page = p; load(); },
-      onSize: s => { STATE.size = s; STATE.page = 1; load(); },
-    });
-  } catch (e) {
-    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败，请稍后重试")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
-    renderStats(null);
-  }
-}
-
-function renderStats(s) {
-  const el = document.getElementById("stat-grid");
-  if (!s) { el.innerHTML = ""; return; }
-  const fallback = s.apply_time_fallback_count || 0;
-  el.innerHTML = [
-    ["退款订单数（去重）", s.refund_order_count, ""],
-    ["退款总金额", fmtMoneyYuan(s.total_refund_amount), "danger"],
-    ["成功退款金额", fmtMoneyYuan(s.success_refund_amount), "success"],
-    ["成功退款金额（按成功时间）", fmtMoneyYuan(s.success_refund_amount_by_success_time), "success"],
-    ["退款处理中金额", fmtMoneyYuan(s.pending_refund_amount), "warn"],
-    ["退款关闭金额", fmtMoneyYuan(s.closed_refund_amount), ""],
-    ["部分退款订单", s.partial_refund_order_count, ""],
-    ["全额退款订单", s.full_refund_order_count, ""],
-    ["退款待核对", s.pending_review_count, s.pending_review_count ? "warn" : ""],
-    ["申请时间回退订单", fallback ? `${fallback} 笔 ⚠` : "0", fallback ? "warn" : ""],
-  ].map(([l, v, c]) => `<div class="stat-item" ${l.includes("回退") && fallback ? 'title="这些订单缺失退款申请时间，时间归属已回退为下单时间（跨月退款保护）"' : ""}><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("")
-    + `<div style="grid-column:1/-1;font-size:12px;color:var(--text-light)">当前时间口径：${TIME_FIELD_LABEL[s.time_field] || s.time_field}；「成功退款金额（按成功时间）」按退款成功时间独立统计，跨月退款归属到成功发生月份。</div>`;
-}
-
-async function showDetail(orderId) {
-  const body = document.getElementById("detail-body");
-  document.getElementById("detail-title").textContent = `退款订单详情：${orderId}`;
-  body.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
-  document.getElementById("detail-modal").classList.add("show");
-  try {
-    const [d, rf] = await Promise.all([
-      API.get(`/api/orders/${encodeURIComponent(orderId)}`),
-      API.get(`/api/orders/${encodeURIComponent(orderId)}/refunds`),
-    ]);
-    renderDetail(d, rf.refunds);
-  } catch (e) {
-    body.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div></div>`;
-  }
-}
-
-function renderDetail(d, refunds) {
-  const body = document.getElementById("detail-body");
-  const v = d.refund_view, a = d.amounts;
-  body.innerHTML = `
-    <div class="detail-section"><h4>退款汇总（按订单去重）</h4>
-      ${v ? `<div class="kv-grid">
-        ${[
-          ["退款状态", ""], ["退款总额", fmtMoneyYuan(v.refund.refund_amount)],
-          ["退款申请时间", v.refund.refund_apply_time ? fmtTime(v.refund.refund_apply_time) : "—"],
-          ["退款成功时间", v.refund.refund_success_time ? fmtTime(v.refund.refund_success_time) : "—"],
-          ["申请时间来源", v.refund.refund_apply_time_source === "order_time_fallback" ? "回退自下单时间（申请时间缺失）" : "平台退款记录"],
-          ["退款成功金额", fmtMoneyYuan(v.refund_by_status.success)],
-          ["退款处理中金额", fmtMoneyYuan(v.refund_by_status.pending)],
-          ["退款关闭金额", fmtMoneyYuan(v.refund_by_status.closed)],
-          ["退款笔数", v.refund.refund_count],
-          ["退款粒度", v.refund.refund_amount_granularity === "unknown" ? "待核对（订单级/商品行级无法判断，不参与自动利润终算）" : "商品行级"],
-          ["状态来源", v.refund.status_source === "derived" ? "推导" : "平台原始"],
-        ].map(([k, val]) => `<div class="kv"><div class="k">${k}</div><div class="v">${esc(val)}</div></div>`).join("")
-          .replace('退款状态</div><div class="v"></div>', `退款状态</div><div class="v">${refundStatusBadge(v.refund.refund_status)}</div>`)}
-      </div>` : `<div style="color:var(--text-light)">无退款汇总</div>`}
-    </div>
-    <div class="detail-section"><h4>订单信息</h4>
-      <div class="kv-grid">
-        ${[
-          ["下单时间", fmtTime(d.order_time)], ["订单状态", ""],
-          ["原始状态", d.source_status || "—"],
-          ["实际收款金额", fmtMoneyYuan(a.actual_received_amount)],
-          ["技术服务费", fmtMoneyYuan(a.technical_service_fee)],
-          ["商品行数", d.product_line_count],
-        ].map(([k, val]) => `<div class="kv"><div class="k">${k}</div><div class="v">${esc(val)}</div></div>`).join("")
-          .replace('订单状态</div><div class="v"></div>', `订单状态</div><div class="v">${orderStatusBadge(d.order_status)}</div>`)}
-      </div>
-    </div>
-    <div class="detail-section"><h4>退款记录（逐笔，${refunds.length} 笔）</h4>
-      ${refunds.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>#</th><th class="num">退款金额</th><th>退款状态</th><th>状态来源</th><th>退款时间</th><th>原售后文本</th><th>源工作表/行号</th><th>导入批次</th></tr></thead>
-        <tbody>${refunds.map((r, i) => `<tr>
-          <td>${i + 1}</td><td class="num">${fmtMoneyYuan(r.refund_amount)}</td>
-          <td>${refundStatusBadge(r.refund_status)}</td>
-          <td>${statusSourceBadge(r.status_source)}</td>
-          <td>${fmtTime(r.refund_time)}</td>
-          <td>${esc(r.raw_after_sale_text || "—")}</td>
-          <td>${esc(r.sheet_name || "—")} 第 ${r.row_number} 行</td>
-          <td style="font-size:12px">${esc(r.batch_id || "—")}</td>
-        </tr>`).join("")}</tbody>
-      </table></div>` : `<div style="color:var(--text-light)">该订单无退款明细记录</div>`}
-    </div>
-    <div class="detail-section"><h4>商品行明细（${d.lines.length} 行）</h4>
-      <div class="table-wrap"><table>
-        <thead><tr><th>商品标题</th><th>规格</th><th class="num">数量</th><th class="num">实际总价</th><th class="num">退款金额</th><th>退款状态</th></tr></thead>
-        <tbody>${d.lines.map(l => `<tr>
-          <td>${esc(l.product.title || "—")}</td><td>${esc(l.product.sku_attribute || "—")}</td>
-          <td class="num">${l.product.quantity}</td>
-          <td class="num">${fmtMoney(l.product.actual_total_price)}</td>
-          <td class="num">${fmtMoney(l.amounts.refund_amount)}</td>
-          <td>${refundStatusBadge(l.refund.refund_status)}</td>
-        </tr>`).join("")}</tbody>
-      </table></div>
-    </div>
-    <div class="detail-section"><h4>数据溯源</h4>
-      ${d.batches.map(b => `<div class="kv-grid" style="margin-bottom:8px">
-        <div class="kv"><div class="k">导入批次</div><div class="v">${esc(b.batch_id)}</div></div>
-        <div class="kv"><div class="k">源文件</div><div class="v">${esc(b.file_name)}</div></div>
-        <div class="kv"><div class="k">导入时间</div><div class="v">${esc(b.imported_at)}</div></div>
-      </div>`).join("") || `<div style="color:var(--text-light)">无批次信息</div>`}
-    </div>`;
-}
-
-document.getElementById("btn-query").onclick = () => { STATE.page = 1; load(); };
-document.querySelector(".filter-grid").addEventListener("change", e => {
-  if (e.target.matches("select")) { STATE.page = 1; load(); }
+const REFUND_PAGE = new ListPage({
+  tableId: "refund-table",
+  url: "/api/refund-orders",
+  itemsKey: "orders",
+  rowKey: "order_id",
+  pageSize: 50,
+  timeLabel: "退款申请时间（缺失回退下单时间）",
+  exportUrl: "/api/refund-orders/export",
+  filters: [
+    { id: "f-order-id", param: "order_id" },
+    { id: "f-keyword", param: "keyword" },
+    { id: "f-status", param: "status" },
+    { id: "f-time-field", param: "time_field", always: true, reset: "apply_time" },
+    { id: "f-min", param: "min_amount" },
+    { id: "f-max", param: "max_amount" },
+    { id: "f-order-by", param: "order_by", always: true, reset: "order_time" },
+    { id: "f-order-dir", param: "order_dir", always: true, reset: "desc" },
+  ],
+  columns: [
+    { title: "订单号", render: r => esc(r.order_id) },
+    { title: "下单时间", render: r => fmtTime(r.order_time) },
+    { title: "退款申请时间", render: r => {
+      const rf = r.refund || {};
+      const applyT = rf.refund_apply_time;
+      const fallback = rf.refund_apply_time_source === "order_time_fallback";
+      if (!applyT) return "—";
+      return fallback
+        ? `<span title="退款申请时间缺失，已回退下单时间" style="color:var(--warning)">${fmtTime(applyT)} ⚠</span>`
+        : fmtTime(applyT);
+    } },
+    { title: "订单状态", render: r => orderStatusBadge(r.order_status) },
+    { title: "退款状态", render: r => refundStatusBadge((r.refund || {}).refund_status) },
+    { title: "退款总额", align: "right", render: r => `<b>${fmtMoney((r.refund || {}).refund_amount)}</b>` },
+    { title: "成功金额", align: "right", render: r =>
+      `<span style="color:var(--success)">${fmtMoney((r.refund_by_status || {}).success)}</span>` },
+    { title: "处理中金额", align: "right", render: r =>
+      `<span style="color:var(--warning)">${fmtMoney((r.refund_by_status || {}).pending)}</span>` },
+    { title: "关闭金额", align: "right", render: r =>
+      `<span style="color:var(--text-light)">${fmtMoney((r.refund_by_status || {}).closed)}</span>` },
+    { title: "笔数", align: "right", render: r => (r.refund || {}).refund_count },
+    { title: "粒度", render: r => (r.refund || {}).refund_amount_granularity === "unknown"
+      ? '<span class="badge orange">粒度待核对</span>' : '<span class="badge gray">商品行级</span>' },
+    { title: "状态来源", render: r => statusSourceBadge((r.refund || {}).status_source) },
+    { title: "实收金额", align: "right", render: r => fmtMoney(r.amounts.actual_received_amount) },
+    { title: "待核对", render: r => r.pending_review ? '<span class="badge red">待核对</span>' : "—" },
+    { title: "操作", fixed: true, render: r =>
+      `<button class="link-btn" type="button" data-detail="${esc(r.order_id)}">详情</button>` },
+  ],
+  stats: s => {
+    if (!s) return "";
+    const fallback = s.apply_time_fallback_count || 0;
+    return renderStatCards(null, [
+      ["退款订单数（去重）", s.refund_order_count, ""],
+      ["退款总金额", fmtMoneyYuan(s.total_refund_amount), "danger"],
+      ["成功退款金额", fmtMoneyYuan(s.success_refund_amount), "success"],
+      ["成功退款金额（按成功时间）", fmtMoneyYuan(s.success_refund_amount_by_success_time), "success"],
+      ["退款处理中金额", fmtMoneyYuan(s.pending_refund_amount), "warn"],
+      ["退款关闭金额", fmtMoneyYuan(s.closed_refund_amount), ""],
+      ["部分退款订单", s.partial_refund_order_count, ""],
+      ["全额退款订单", s.full_refund_order_count, ""],
+      ["退款待核对", s.pending_review_count, s.pending_review_count ? "warn" : ""],
+      ["申请时间回退订单", fallback ? `${fallback} 笔 ⚠` : "0", fallback ? "warn" : "",
+        "", fallback ? "这些订单缺失退款申请时间，时间归属已回退为下单时间（跨月退款保护）" : ""],
+    ], `当前时间口径：${TIME_FIELD_LABEL[s.time_field] || s.time_field}；「成功退款金额（按成功时间）」按退款成功时间独立统计，跨月退款归属到成功发生月份。`);
+  },
+  emptyHtml: mf =>
+    `<div class="empty-state"><div class="icon">🔄</div>当前筛选（${esc(mf.getLabel())}）内没有退款订单<br>
+     <span style="font-size:12px">可先在「数据导入」页导入微信订单 Excel，或切换月份/时间口径</span></div>`,
 });
-document.getElementById("btn-reset").onclick = () => {
-  ["f-order-id", "f-keyword", "f-status", "f-min", "f-max"].forEach(id =>
-    document.getElementById(id).value = "");
-  document.getElementById("f-time-field").value = "apply_time";
-  document.getElementById("f-order-by").value = "order_time";
-  document.getElementById("f-order-dir").value = "desc";
-  STATE.page = 1;
-  MF.reset();
-};
-document.getElementById("btn-export").onclick = () => {
-  window.open(`/api/refund-orders/export?${queryStr()}`);
-  toast("导出文件生成中…", "info");
-};
-["f-order-id", "f-keyword", "f-min", "f-max"].forEach(id =>
-  document.getElementById(id).addEventListener("keydown", e => { if (e.key === "Enter") { STATE.page = 1; load(); } }));
-load();
+
+document.querySelector("#refund-table tbody").addEventListener("click", e => {
+  const detail = e.target.closest("[data-detail]");
+  if (detail) openOrderDetail(detail.dataset.detail, { mode: "refund" });
+});
+
+REFUND_PAGE.reload();
 </script>
 </body>
 </html>

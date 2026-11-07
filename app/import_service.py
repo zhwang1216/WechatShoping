@@ -5,6 +5,7 @@
 2. confirm_import: 用户确认后 -> 重复文件检测(hash+source_type) -> 生成批次 ->
    原始记录留存(含错误行) -> 标准记录 upsert(业务键去重) -> 退款识别 ->
    异常记录 -> 重建退款订单视图 -> 统计返回
+3. 微信订单：商品发货=未发货（或无发货列且订单状态为待发货等）的行自动剔除，不写入订单库。
 """
 import io
 import json
@@ -19,14 +20,22 @@ from . import config
 from .data_schemas import now_iso
 from .errors import (BatchNotFoundError, ImportConflictError, ImportServiceError,
                      ImportValidationError, UploadNotFoundError)
+from .excel_export import append_row
 from .excel_reader import (analyze_sheet, compute_sha256, iter_data_rows,
                            load_workbook_from_bytes, preview_rows, raw_fields_of)
 from .import_schemas import (MAPPING_VERSION, SOURCE_TYPES, TEMPLATE_VERSION,
                              get_template)
 from .normalizer import (build_supplier_cost_line, build_wechat_order_line,
-                         money_str)
+                          money_str)
+from .profit_service import is_unshipped_order
 from .refund_view import build_refund_views
 from .time_range import in_range
+
+_EXCEL_EXTS = (".xlsx", ".xls")
+
+
+def _is_excel_ext(filename):
+    return filename.lower().endswith(_EXCEL_EXTS)
 
 
 def _business_key(source_type, record):
@@ -53,6 +62,52 @@ def _data_file_of(source_type):
     return "orders" if source_type == "wechat_orders" else "supplier_costs"
 
 
+_WECHAT_CELLS_TO_FIELDS = {
+    "order_time": [("order_time", None)],
+    "order_status": [("order_status", None), ("source_status", None)],
+    "product_quantity": [("product", "quantity")],
+    "product_title": [("product", "title")],
+    "sku_attribute": [("product", "sku_attribute")],
+    "sku_code": [("product", "sku_code")],
+    "actual_received_amount": [("amounts", "actual_received_amount")],
+    "actual_paid_amount": [("amounts", "actual_paid_amount")],
+    "shipping_fee": [("amounts", "shipping_fee")],
+    "product_total_price": [("amounts", "product_total"), ("product", "actual_total_price")],
+    "technical_service_fee": [("amounts", "technical_service_fee")],
+    "refund_amount": [("amounts", "refund_amount"), ("refund", "refund_amount")],
+}
+_SUPPLIER_CELLS_TO_FIELDS = {
+    "main_order_id": [("main_order_id", None)],
+    "supplier_order_id": [("supplier_order_id", None)],
+    "created_at": [("created_at", None)],
+    "product_quantity": [("product", "quantity")],
+    "product_title": [("product", "title")],
+    "product_code": [("product", "product_code")],
+    "sku_code": [("product", "sku_code")],
+    "sku_id": [("product", "sku_id")],
+    "total_amount": [("cost_breakdown", "total_amount")],
+    "product_supply_cost": [("cost_breakdown", "product_supply_cost")],
+    "courier_fee": [("cost_breakdown", "courier_fee")],
+    "foam_material_fee": [("cost_breakdown", "foam_material_fee")],
+    "surcharge": [("cost_breakdown", "surcharge")],
+    "fuel_or_tianjin_packing_fee": [("cost_breakdown", "fuel_or_tianjin_packing_fee")],
+    "courier_fee_total": [("cost_breakdown", "courier_fee_total")],
+    "platform_subsidy": [("platform_subsidy", None)],
+    "supplier_actual_received": [("supplier_actual_received", None)],
+    "shipping_fee": [("shipping_fee", None)],
+    "carrier": [("tracking", "carrier")],
+    "tracking_number": [("tracking", "tracking_number")],
+}
+_IMPORT_SYSTEM_FIELDS = {
+    "record_id", "source_record_id", "batch_id", "business_key",
+    "created_at", "updated_at", "match_status", "data_quality",
+    "match_key_normalized", "order_level_amounts_duplicated",
+    "refund_deduction_status", "total_amount_semantics",
+    "cost_granularity", "duplicate_total_amount_risk", "created_at_ts",
+    "refund", "tracking",
+}
+
+
 class ImportService:
     def __init__(self, repo, op_log, upload_dir=None):
         self.repo = repo
@@ -60,13 +115,46 @@ class ImportService:
         self.upload_dir = upload_dir or config.UPLOAD_DIR
         os.makedirs(self.upload_dir, exist_ok=True)
 
+    def precheck(self, source_type, filename, data):
+        """文件初步校验：仅识别结构，不暂存、不写业务数据（供导入流程前置校验）"""
+        if source_type not in SOURCE_TYPES:
+            raise ImportValidationError(f"未知数据源类型: {source_type}")
+        if not isinstance(filename, str) or not _is_excel_ext(filename):
+            raise ImportValidationError("仅支持 .xlsx 或 .xls 文件")
+        file_hash = compute_sha256(data)[:16]
+        try:
+            wb = load_workbook_from_bytes(data)
+        except ImportValidationError:
+            raise
+        except Exception as e:
+            raise ImportValidationError(f"文件无法读取: {e}")
+        sheets = wb.sheetnames
+        if not sheets:
+            raise ImportValidationError("文件不包含任何工作表")
+        sheet_info = []
+        for name in sheets:
+            ws = wb[name]
+            sheet_info.append({
+                "name": name,
+                "rows": ws.max_row or 0,
+                "columns": ws.max_column or 0,
+            })
+        return {
+            "file_name": filename,
+            "file_size": len(data),
+            "file_hash": file_hash,
+            "source_type": source_type,
+            "sheets": sheet_info,
+            "readable": True,
+        }
+
     # ==================== 预览 ====================
     def preview_upload(self, source_type, filename, data, operator="admin",
                        target_store_id=None):
         if source_type not in SOURCE_TYPES:
             raise ImportServiceError(f"未知数据源类型: {source_type}")
-        if not filename or not str(filename).lower().endswith(".xlsx"):
-            raise ImportValidationError("仅支持 .xlsx 文件（Excel 2007+ 格式）")
+        if not filename or not _is_excel_ext(str(filename)):
+            raise ImportValidationError("仅支持 .xlsx 或 .xls 文件")
         analysis = self._analyze(source_type, str(filename), data)
 
         upload_id = uuid.uuid4().hex
@@ -147,6 +235,7 @@ class ImportService:
 
         new_raw = []
         new_anomalies = []
+        overwrite_log = []
 
         def add_anomaly(order_id, etype, severity, message, related_ids):
             key = (order_id, etype)
@@ -193,6 +282,13 @@ class ImportService:
                     order_id = str(order_id).strip() if order_id else None
                     add_anomaly(order_id, err["type"], "high", err["message"],
                                 [raw_record_id])
+                self.op_log.append("import_validation_failed", detail={
+                    "batch_id": batch_id,
+                    "source_type": source_type,
+                    "store_id": target_store_id,
+                    "row_number": rec["row_number"],
+                    "errors": rec["errors"],
+                }, operator=operator)
                 new_raw.append(raw)
                 continue
 
@@ -206,13 +302,33 @@ class ImportService:
                 new_raw.append(raw)
                 continue
 
+            if rec.get("outcome") == "skipped_unshipped":
+                raw["validation"]["status"] = "skipped"
+                raw["validation"]["warnings"] = [{
+                    "type": "UNSHIPPED_ORDER_SKIPPED",
+                    "severity": "low",
+                    "message": "商品未发货，导入时已自动剔除，不写入订单库",
+                }]
+                new_raw.append(raw)
+                continue
+
             line = rec["line"]
             line["batch_id"] = batch_id
             line["source_record_id"] = raw_record_id
             line["business_key"] = rec["business_key"]
             if rec["outcome"] == "update":
                 old = existing[key_index[rec["business_key"]]]
+                line, overwritten = self._merge_fields(
+                    old, line, rec.get("cells", {}), source_type, batch_id, operator)
+                if overwritten:
+                    overwrite_log.append({
+                        "business_key": rec["business_key"],
+                        "fields": overwritten,
+                    })
                 line["record_id"] = old.get("record_id") or "rec_" + uuid.uuid4().hex
+                line["business_key"] = rec["business_key"]
+                line["batch_id"] = batch_id
+                line["source_record_id"] = raw_record_id
                 # created_at 保留业务时间语义：优先新解析值（文件修正），
                 # 回退旧记录值，最后回退导入时刻（微信行无业务创建时间字段）
                 line["created_at"] = (line.get("created_at")
@@ -330,6 +446,14 @@ class ImportService:
             "status": batch_status, "forced": bool(duplicate and force),
         }, operator=operator)
 
+        if overwrite_log:
+            self.op_log.append("import_overwrite", detail={
+                "batch_id": batch_id, "source_type": source_type,
+                "store_id": target_store_id,
+                "overwritten_count": len(overwrite_log),
+                "records": overwrite_log,
+            }, operator=operator)
+
         return {
             "batch_id": batch_id,
             "source_type": source_type,
@@ -337,6 +461,8 @@ class ImportService:
             "statistics": stats,
             "warnings": analysis["hints"],
             "errors_export_url": f"/api/import/batches/{batch_id}/errors/export",
+            "affected_period": self._compute_period(
+                source_type, analysis.get("row_results", [])),
         }
 
     # ==================== 批次查询 ====================
@@ -540,25 +666,25 @@ class ImportService:
         wb = Workbook()
         ws = wb.active
         ws.title = "导入异常清单"
-        ws.append(["类别", "工作表", "行号", "级别", "异常类型", "详情",
-                   "关联订单号", "原始数据"])
+        append_row(ws, ["类别", "工作表", "行号", "级别", "异常类型", "详情",
+                        "关联订单号", "原始数据"])
         for r in raws:
             v = r.get("validation", {})
             for e in v.get("errors", []):
-                ws.append(["原始记录行", r.get("sheet_name"), r.get("row_number"),
-                           "错误", e.get("type", ""), e.get("message", ""),
-                           (r.get("raw_fields") or {}).get("订单号", ""),
-                           json.dumps(r.get("raw_fields") or {},
-                                      ensure_ascii=False)[:500]])
+                append_row(ws, ["原始记录行", r.get("sheet_name"), r.get("row_number"),
+                                "错误", e.get("type", ""), e.get("message", ""),
+                                (r.get("raw_fields") or {}).get("订单号", ""),
+                                json.dumps(r.get("raw_fields") or {},
+                                           ensure_ascii=False)[:500]])
             for w in v.get("warnings", []):
-                ws.append(["原始记录行", r.get("sheet_name"), r.get("row_number"),
-                           "警告", w.get("type", ""), w.get("message", ""),
-                           (r.get("raw_fields") or {}).get("订单号", ""),
-                           json.dumps(r.get("raw_fields") or {},
-                                      ensure_ascii=False)[:500]])
+                append_row(ws, ["原始记录行", r.get("sheet_name"), r.get("row_number"),
+                                "警告", w.get("type", ""), w.get("message", ""),
+                                (r.get("raw_fields") or {}).get("订单号", ""),
+                                json.dumps(r.get("raw_fields") or {},
+                                           ensure_ascii=False)[:500]])
         for a in anomalies:
-            ws.append(["异常记录", "", "", "异常", a.get("exception_type", ""),
-                       a.get("message", ""), a.get("order_id") or "", ""])
+            append_row(ws, ["异常记录", "", "", "异常", a.get("exception_type", ""),
+                            a.get("message", ""), a.get("order_id") or "", ""])
         buf = io.BytesIO()
         wb.save(buf)
         return f"导入异常清单_{batch_id}.xlsx", buf.getvalue()
@@ -595,7 +721,7 @@ class ImportService:
                  else build_supplier_cost_line)
         stats = {"total_rows": 0, "success_rows": 0, "error_rows": 0,
                  "duplicate_rows": 0, "updated_rows": 0, "skipped_rows": 0,
-                 "warning_rows": 0}
+                 "excluded_unshipped_rows": 0, "warning_rows": 0}
         row_results = []
         seen = set()
         for r, cells in iter_data_rows(ws, sa):
@@ -614,6 +740,12 @@ class ImportService:
             if errors:
                 stats["error_rows"] += 1
                 rec["outcome"] = "error"
+            elif (source_type == "wechat_orders"
+                  and is_unshipped_order(line.get("order_status"),
+                                         line.get("ship_status"))):
+                stats["excluded_unshipped_rows"] += 1
+                stats["skipped_rows"] += 1
+                rec["outcome"] = "skipped_unshipped"
             else:
                 key = _business_key(source_type, line)
                 rec["business_key"] = key
@@ -632,6 +764,11 @@ class ImportService:
             row_results.append(rec)
 
         hints, group_anomalies = self._apply_group_checks(source_type, row_results)
+        if source_type == "wechat_orders" and stats["excluded_unshipped_rows"]:
+            hints.insert(
+                0,
+                f"已自动剔除未发货订单 {stats['excluded_unshipped_rows']} 行（不写入系统）",
+            )
         period = self._compute_period(source_type, row_results)
         preview = {
             "file_hash": file_hash,
@@ -666,7 +803,9 @@ class ImportService:
     def _apply_group_checks(source_type, row_results):
         """粒度/重复检查：订单级金额重复、退款粒度、供应商总金额重复风险"""
         hints, group_anomalies = [], []
-        valid = [rec for rec in row_results if rec.get("line")]
+        valid = [rec for rec in row_results
+                 if rec.get("line")
+                 and rec.get("outcome") not in ("skipped_unshipped", "empty")]
         if source_type == "wechat_orders":
             groups = {}
             for rec in valid:
@@ -741,10 +880,66 @@ class ImportService:
                         })
         return hints, group_anomalies
 
+    def _merge_fields(self, old, new_line, cells, source_type, batch_id, operator):
+        """字段级合并：仅覆盖本次 Excel 实际包含的字段，未包含字段保留历史值。
+        被覆盖字段清除 manual_modified_fields 标记、置 data_source=import。
+        返回 (merged_record, overwritten_fields_with_before_after)"""
+        merged = json.loads(json.dumps(old))
+        mapping = (_WECHAT_CELLS_TO_FIELDS if source_type == "wechat_orders"
+                   else _SUPPLIER_CELLS_TO_FIELDS)
+        overwritten = []
+        for cells_key, field_paths in mapping.items():
+            if cells_key not in cells:
+                continue
+            for top, sub in field_paths:
+                new_val = (new_line.get(top) if sub is None
+                           else (new_line.get(top) or {}).get(sub))
+                if sub is None:
+                    old_val = merged.get(top)
+                    merged[top] = new_val
+                    field_label = top
+                else:
+                    merged.setdefault(top, {})
+                    old_val = merged[top].get(sub)
+                    merged[top][sub] = new_val
+                    field_label = f"{top}.{sub}"
+                if old_val != new_val:
+                    overwritten.append({
+                        "field": field_label,
+                        "before": old_val,
+                        "after": new_val,
+                    })
+        merged["updated_at"] = now_iso()
+        if batch_id:
+            merged["last_import_batch_id"] = batch_id
+        if source_type == "wechat_orders":
+            if "refund_amount" in cells or "after_sale" in cells:
+                merged["refund"] = json.loads(json.dumps(new_line.get("refund", {})))
+                merged["refund_deduction_status"] = new_line.get("refund_deduction_status", "unknown")
+                if "amounts" in merged and "refund_amount" in (new_line.get("amounts") or {}):
+                    merged["amounts"]["refund_amount"] = new_line["amounts"]["refund_amount"]
+        else:
+            if "carrier" in cells or "tracking_number" in cells:
+                merged["tracking"] = json.loads(json.dumps(new_line.get("tracking", {})))
+        mf = merged.setdefault("manual_modified_fields", [])
+        ds = merged.setdefault("data_source", {})
+        for ow in overwritten:
+            f = ow["field"]
+            if f in mf:
+                mf.remove(f)
+            ds[f] = "import"
+        if any(ow["field"] == "cost_breakdown.total_amount" for ow in overwritten):
+            merged.pop("manual_cost_source", None)
+            merged.pop("manual_cost_modified_at", None)
+            merged.pop("manual_cost_modified_by", None)
+        return merged, overwritten
+
     @staticmethod
     def _compute_period(source_type, row_results):
         field = "order_time" if source_type == "wechat_orders" else "created_at"
-        times = [rec["line"].get(field) for rec in row_results if rec.get("line")]
+        times = [rec["line"].get(field) for rec in row_results
+                 if rec.get("line")
+                 and rec.get("outcome") not in ("skipped_unshipped", "empty")]
         times = [t for t in times if t]
         if not times:
             return {"start": None, "end": None}

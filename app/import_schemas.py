@@ -37,6 +37,11 @@ WECHAT_ORDER_FIELDS = {
         "aliases": ["订单状态"],
         "required_column": True, "label": "订单状态",
     },
+    "ship_status": {
+        "aliases": ["商品发货", "发货状态", "发货情况"],
+        "required_column": False, "label": "商品发货",
+        "comment": "商品发货状态；'未发货'导入时自动剔除；非'已发货'不进入对账；未发货亦不进入利润统计",
+    },
     "actual_received_amount": {
         "aliases": ["订单实际收款金额", "实际收款金额", "订单实收金额"],
         "required_column": True, "label": "订单实际收款金额",

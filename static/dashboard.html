@@ -2,66 +2,58 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>经营总览 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
 <style>
-.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
+.page-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+.page-head .page-title { margin-bottom: 0; }
+.page-head .page-desc { margin-bottom: 0; flex: 1 1 320px; }
+.kpi-section { margin-bottom: 16px; }
+.kpi-section-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; padding-left: 2px; }
+.kpi-section-title::before { content: ""; display: inline-block; width: 3px; height: 14px; background: var(--primary); margin-right: 8px; vertical-align: -2px; border-radius: 2px; }
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
 .kpi-card{background:var(--bg-card,#fff);border:1px solid var(--border,#e5e7eb);border-radius:10px;padding:14px 16px;position:relative}
 .kpi-card .label{font-size:12px;color:var(--text-light,#6b7280)}
-.kpi-card .value{font-size:24px;font-weight:700;margin-top:4px;word-break:break-all}
+.kpi-card .value{font-size:24px;font-weight:700;margin-top:4px;word-break:break-all;font-variant-numeric:tabular-nums}
 .kpi-card .sub{font-size:11px;color:var(--text-light,#6b7280);margin-top:2px}
-.kpi-card.hero{grid-column:span 2;border-left:4px solid var(--primary,#0f766e)}
+.kpi-card.hero{grid-column:span 2;border-left:4px solid var(--primary,#0f766e);background:var(--bg-light,#f0fdfa)}
+.kpi-card.hero .value{font-size:28px;color:var(--primary,#0f766e)}
+@media (max-width: 640px) {
+  .kpi-card.hero{grid-column:auto}
+}
 .kpi-card.warn{border-left:4px solid var(--warning,#f59e0b)}
 .kpi-card.good{border-left:4px solid var(--success,#16a34a)}
 .status-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;font-size:12px}
+.trend-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.trend-card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+.trend-card .trend-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px}
+.trend-card .trend-svg{width:100%;height:72px;display:block}
+.trend-card .trend-meta{font-size:11px;color:var(--text-light);margin-top:4px}
+.trend-card .trend-empty{font-size:12px;color:var(--text-light);padding:24px 0;text-align:center}
+.bs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
+.bs-card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 16px;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.bs-card:hover{border-color:var(--primary);box-shadow:0 2px 8px rgba(15,118,110,.12)}
+.bs-card .label{font-size:12px;color:var(--text-light)}
+.bs-card .value{font-size:22px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums}
+.bs-card .sub{font-size:11px;color:var(--text-light);margin-top:2px}
+.bs-card.warn{border-left:4px solid var(--warning)}
+.update-meta{font-size:12px;color:var(--text-light);margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)}
 </style>
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard" class="active">经营总览</a>
-    <a href="/data-import">数据导入</a>
-    <a href="/orders">普通订单</a>
-    <a href="/refund-orders">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation">对账成本</a>
-    <a href="/profit">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create">创建用户</a>
-      <a href="/stores">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-    <span class="meta" id="nav-meta"></span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
-  <div class="page-title">经营总览</div>
-  <div class="page-desc">按月份/日期范围汇总经营指标（默认本月）；利润为经营贡献利润口径，可计算订单明细汇总与看板完全一致（误差 ≤ 0.01 元）。</div>
+<!--@app-shell-->
+  <div class="page-head">
+    <div class="page-title">经营总览</div>
+    <div class="page-desc">按月份/日期范围汇总经营指标（默认本月）；利润为经营贡献利润口径，可计算订单明细汇总与看板完全一致（误差 ≤ 0.01 元）。</div>
+    <button class="btn" id="btn-goto-calc" style="margin-left:auto">去核算利润</button>
+  </div>
   <div class="declare-banner" id="declaration"></div>
 
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
-
   <div class="card">
-    <div class="filter-bar" style="align-items:center">
-      <span style="font-size:13px;color:var(--text-light)">统计口径：订单下单时间（左闭右开区间）</span>
-      <button class="btn" id="btn-goto-calc" style="margin-left:auto">去核算利润</button>
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
     </div>
   </div>
 
@@ -71,6 +63,9 @@
     <h3 style="margin:0 0 6px">利润可计算性与提醒</h3>
     <div id="status-body"></div>
   </div>
+
+  <div id="trends-area"></div>
+  <div id="business-status-area"></div>
 </div>
 
 </div>
@@ -98,10 +93,18 @@ function qs() {
   return p;
 }
 
+let followedFallback = false;
+function timeFilterExplicit() {
+  const q = new URLSearchParams(location.search);
+  return q.has("month") || q.has("from") || q.has("to") || q.get("t") === "all";
+}
+
 async function load() {
   const area = document.getElementById("kpi-area");
   area.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
   document.getElementById("status-card").style.display = "none";
+  document.getElementById("trends-area").innerHTML = "";
+  document.getElementById("business-status-area").innerHTML = "";
   try {
     const [h, s] = await Promise.all([
       API.get("/api/health"),
@@ -111,10 +114,19 @@ async function load() {
     document.getElementById("declaration").textContent = s.declaration || "";
 
     if (!s.has_orders) {
+      if (!followedFallback && !timeFilterExplicit()) {
+        followedFallback = true;
+        toast("本月暂无订单数据，已切换为全部时间", "info", 3000);
+        MF._set({ mode: "all", month: null, from: "", to: "" });
+        return;
+      }
       area.innerHTML = `<div class="empty-state"><div class="icon">📭</div>当前筛选（${esc(MF.getLabel())}）内暂无订单数据<br>
         <span style="font-size:13px;color:var(--text-light)">可切换月份或选择「全部」查看全部数据；请先在数据导入页上传微信订单 Excel（未覆盖期间不计为 0 销售）</span></div>`;
+      renderTrends({});
+      renderBusinessStatus({}, s.latest_update_time);
       return;
     }
+    followedFallback = false;
     render(s);
   } catch (e) {
     area.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
@@ -128,23 +140,32 @@ function kpi(label, value, sub = "", cls = "") {
 
 function render(s) {
   const margin = s.profit_margin
-    ? `<div class="value" style="color:var(--success)">${esc(s.profit_margin)}</div>`
+    ? `<div class="value">${esc(s.profit_margin)}</div>`
     : `<div class="value">—</div><div class="sub">${esc(s.profit_margin_blocked_label || "净收入不大于零，禁止显示误导性利润率")}</div>`;
   const refundRate = s.refund_rate ? `退款率 ${esc(s.refund_rate)}` : "退款率 —";
-  const cards = [
-    kpi("订单数（去重）", s.order_count, `退款订单 ${s.refund_order_count} 单`),
-    kpi("订单实际收款金额", fmtMoneyYuan(s.actual_received_amount), `实付合计 ¥${fmtMoney(s.actual_paid_amount)} · 商品销售额 ¥${fmtMoney(s.product_sales_amount)}`),
-    kpi("成功退款", fmtMoneyYuan(s.refund_success_amount), `${refundRate} · 处理中 ¥${fmtMoney(s.refund_pending_amount)}（不计入成功退款）`),
-    kpi("综合成本（总金额，只扣一次）", fmtMoneyYuan(s.supplier_total_cost), "按对账确认粒度汇总"),
-    kpi("技术服务费", fmtMoneyYuan(s.technical_service_fee), "订单去重汇总"),
-    kpi("经营贡献利润", fmtMoneyYuan(s.operating_contribution_profit), `净收入合计 ¥${fmtMoney(s.net_revenue_total)}`, "good"),
-    `<div class="kpi-card hero"><div class="label">经营贡献利润率</div>${margin}
-       <div class="sub">利润率 = 贡献利润 ÷ 净收入（仅净收入 &gt; 0 时计算）</div></div>`,
-    kpi("未匹配订单", s.unmatched_order_count, "成本未知，利润不可计算", s.unmatched_order_count > 0 ? "warn" : ""),
-    kpi("未处理异常", `<a href="/anomalies" style="color:inherit">${s.open_anomaly_count}</a>`, "点击进入异常处理", s.open_anomaly_count > 0 ? "warn" : ""),
-    kpi("可计算利润覆盖率", esc(s.profit_coverage || "0.00%"), `可计算 ${s.calculable_order_count} / ${s.order_count} 单`),
+  const heroCard = `<div class="kpi-card hero"><div class="label">经营贡献利润率</div>${margin}
+     <div class="sub">利润率 = 贡献利润 ÷ 净收入（仅净收入 &gt; 0 时计算）</div></div>`;
+  const sections = [
+    { title: "销售概览", cards: [
+      kpi("订单数（去重）", s.order_count, `退款订单 ${s.refund_order_count} 单`),
+      kpi("订单实际收款金额", fmtMoneyYuan(s.actual_received_amount), `实付 ¥${fmtMoney(s.actual_paid_amount)} · 商品销售额 ¥${fmtMoney(s.product_sales_amount)}`),
+      kpi("成功退款", fmtMoneyYuan(s.refund_success_amount), `${refundRate} · 处理中 ¥${fmtMoney(s.refund_pending_amount)}`),
+    ]},
+    { title: "成本与利润", cards: [
+      kpi("综合成本（只扣一次）", fmtMoneyYuan(s.supplier_total_cost), "按对账确认粒度汇总"),
+      kpi("技术服务费", fmtMoneyYuan(s.technical_service_fee), "订单去重汇总"),
+      kpi("经营贡献利润", fmtMoneyYuan(s.operating_contribution_profit), `净收入合计 ¥${fmtMoney(s.net_revenue_total)}`, "good"),
+      heroCard,
+    ]},
+    { title: "数据健康度", cards: [
+      kpi("未匹配订单", s.unmatched_order_count, "成本未知，利润不可计算", s.unmatched_order_count > 0 ? "warn" : ""),
+      kpi("未处理异常", `<a href="/anomalies" style="color:inherit">${s.open_anomaly_count}</a>`, "点击进入异常处理", s.open_anomaly_count > 0 ? "warn" : ""),
+      kpi("可计算利润覆盖率", esc(s.profit_coverage || "0.00%"), `可计算 ${s.calculable_order_count} / ${s.order_count} 单`),
+    ]},
   ];
-  document.getElementById("kpi-area").innerHTML = `<div class="kpi-grid">${cards.join("")}</div>`;
+  document.getElementById("kpi-area").innerHTML = sections.map(sec =>
+    `<div class="kpi-section"><div class="kpi-section-title">${sec.title}</div>
+     <div class="kpi-grid">${sec.cards.join("")}</div></div>`).join("");
 
   const sc = s.profit_status_counts || {};
   const run = s.latest_calculation;
@@ -163,6 +184,73 @@ function render(s) {
   document.getElementById("status-body").innerHTML =
     `<div class="status-row">${reminders.map(x => `<div>${x}</div>`).join("")}</div>`;
   document.getElementById("status-card").style.display = "";
+
+  renderTrends(s.daily_trends || {});
+  renderBusinessStatus(s.business_status || {}, s.latest_update_time);
+}
+
+function renderTrends(t) {
+  const area = document.getElementById("trends-area");
+  const charts = [
+    { title: "每日订单量", values: t.order_count || [], color: "#0f766e", isCount: true },
+    { title: "每日实际收款", values: (t.actual_received || []).map(Number), color: "#115e59" },
+    { title: "每日退款", values: (t.refund_success || []).map(Number), color: "#b45309" },
+    { title: "每日成本", values: (t.supplier_cost || []).map(Number), color: "#dc2626" },
+    { title: "每日贡献利润", values: (t.contribution_profit || []).map(Number), color: "#15803d" },
+  ];
+  area.innerHTML = `<div class="card"><h3 style="margin:0 0 10px">经营趋势（按订单下单日聚合）</h3>
+    <div class="trend-grid">${charts.map(c => trendCard(c)).join("")}</div></div>`;
+}
+
+function trendCard(c) {
+  const vals = c.values;
+  if (!vals.length) {
+    return `<div class="trend-card"><div class="trend-title">${c.title}</div><div class="trend-empty">暂无数据</div></div>`;
+  }
+  const w = 100, h = 56, pad = 4;
+  const max = Math.max(...vals), min = Math.min(...vals);
+  const range = max - min || 1;
+  const n = vals.length;
+  const pts = vals.map((v, i) => {
+    const x = pad + (i / Math.max(n - 1, 1)) * (w - 2 * pad);
+    const y = h - pad - ((v - min) / range) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = vals[vals.length - 1];
+  const lastLabel = c.isCount ? `${last} 单` : fmtMoney(last);
+  return `<div class="trend-card"><div class="trend-title">${c.title}</div>
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="trend-svg">
+      <path d="M${pts.join(" L")}" fill="none" stroke="${c.color}" stroke-width="1.5"/>
+    </svg>
+    <div class="trend-meta">${n} 日 · 最近 ${lastLabel}</div></div>`;
+}
+
+function renderBusinessStatus(bs, updateTime) {
+  const area = document.getElementById("business-status-area");
+  const items = [
+    { label: "待对账订单", value: bs.pending_reconcile || 0, sub: "未匹配成本",
+      href: "/reconciliation?match_status=unmatched", warn: (bs.pending_reconcile || 0) > 0 },
+    { label: "成本未匹配", value: bs.cost_unmatched || 0, sub: "供应商成本缺失",
+      href: "/supplier-costs?match_status=unmatched", warn: (bs.cost_unmatched || 0) > 0 },
+    { label: "待确认利润", value: bs.pending_profit || 0, sub: "口径未确认",
+      href: "/profit?profit_status=pending_confirmation", warn: (bs.pending_profit || 0) > 0 },
+    { label: "异常数据", value: bs.anomaly_count || 0, sub: "待处理异常",
+      href: "/anomalies", warn: (bs.anomaly_count || 0) > 0 },
+  ];
+  const batch = bs.latest_import_batch;
+  let batchCard = "";
+  if (batch) {
+    batchCard = `<div class="bs-card"><div class="label">最近导入批次</div>
+      <div class="value" style="font-size:14px">${esc(batch.batch_id || "—")}</div>
+      <div class="sub">${esc(batch.source_type || "")} · ${fmtTime(batch.imported_at)}</div></div>`;
+  }
+  const meta = updateTime ? `<div class="update-meta">数据最近更新时间：${fmtTime(updateTime)}</div>` : "";
+  area.innerHTML = `<div class="card"><h3 style="margin:0 0 10px">业务状态</h3>
+    <div class="bs-grid">${items.map(it =>
+      `<div class="bs-card${it.warn ? " warn" : ""}" onclick="location.href='${it.href}'">
+        <div class="label">${it.label}</div><div class="value">${it.value}</div>
+        <div class="sub">${it.sub}</div></div>`
+    ).join("")}${batchCard}</div>${meta}</div>`;
 }
 
 document.getElementById("btn-goto-calc").onclick = () => {

@@ -2,43 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>店铺管理 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard">经营总览</a>
-    <a href="/data-import">数据导入</a>
-    <a href="/orders">普通订单</a>
-    <a href="/refund-orders">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation">对账成本</a>
-    <a href="/profit">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group nav-group-current" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create">创建用户</a>
-      <a href="/stores" class="active">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
+<!--@app-shell-->
   <div class="page-title">店铺管理<span class="page-help" id="store-help" tabindex="0"
         title="每个店铺唯一归属一个普通成员（member），一个成员可拥有多个店铺，业务数据相互隔离；管理员账号不持有业务店铺。修改归属、停用与删除均自动备份，店铺 ID 与业务数据保持不变（删除除外，见各操作确认说明）。">?</span></div>
   <div class="page-desc">管理店铺信息、归属成员及业务数据。</div>
@@ -101,6 +70,7 @@
     <div class="pager" id="store-pager"></div>
   </div>
 
+</div>
 </div>
 <script src="/static/api.js"></script>
 <script src="/static/auth_nav.js"></script>
@@ -226,7 +196,6 @@ function openRowMenu(storeId, anchorEl) {
   if (as !== "unassigned") {
     items.push({ label: "标记待分配", onClick: () => markUnassigned(id, name) });
   }
-  items.push({ label: "修改归属", onClick: () => openTransferOwnership(id, name) });
   items.push({ label: "清除业务数据", onClick: () => clearStoreDataFlow(id, name) });
   items.push({ label: "删除店铺", danger: true, onClick: () => deleteStoreFlow(id, name) });
   menu.innerHTML = items.map(it =>
@@ -251,7 +220,7 @@ function rowOps(store) {
   return `
     <div class="store-ops" style="white-space:nowrap">
       <button class="link-btn" onclick="viewStoreData('${esc(store.store_id)}')">查看</button>
-      <button class="link-btn" onclick="renameStore('${esc(store.store_id)}', '${esc(store.name)}')">编辑</button>
+      <button class="link-btn" onclick="editStore('${esc(store.store_id)}')">编辑</button>
       <span class="more-wrap">
         <button class="btn-more" type="button" aria-expanded="false"
                 onclick="event.stopPropagation();openRowMenu('${esc(store.store_id)}', this)">更多 ▾</button>
@@ -420,23 +389,49 @@ async function openCreateStore() {
 }
 document.getElementById("btn-create-store").onclick = openCreateStore;
 
-/* ==================== 编辑店铺信息（重命名）弹窗 ==================== */
-function renameStore(storeId, currentName) {
+/* ==================== 编辑店铺信息弹窗（名称+归属者） ==================== */
+async function editStore(storeId) {
+  const store = CURRENT_STORES.find(x => x.store_id === storeId);
+  if (!store) { toast("未找到店铺信息，请刷新后重试", "error"); return; }
   const fieldErr = (id, text) => {
     const el = document.getElementById(id);
     el.textContent = text || "";
     el.style.display = text ? "block" : "none";
   };
+  let members = [];
+  let membersLoadErr = "";
+  try {
+    const users = (await API.get("/api/users")).users || [];
+    members = users.filter(u => u.role === "member" && u.status === "active");
+  } catch (e) {
+    membersLoadErr = e.message || "获取成员清单失败";
+  }
+  const currentOwnerId = store.owner_user_id || "";
+  const statusText = store.status === "active" ? "启用" : (store.status === "archived" ? "已归档" : store.status || "—");
   openModal({
-    title: "重命名店铺",
-    width: 420,
+    title: "编辑店铺",
+    width: 480,
     bodyHtml: `
       <div style="font-size:13px;color:var(--text-light);margin-bottom:10px">
-        店铺 ID <b style="font-family:monospace">${esc(storeId)}</b> 保持不变，数据归属与历史关联不受影响，仅更新显示名称。
+        店铺 ID <b style="font-family:monospace">${esc(storeId)}</b> 保持不变，历史业务数据不受影响。
       </div>
-      <div><label>新的店铺名称</label>
-        <input id="rn-input" value="${esc(currentName)}" maxlength="64" autocomplete="off">
+      <div><label>店铺名称</label>
+        <input id="rn-input" value="${esc(store.name || "")}" maxlength="64" autocomplete="off">
         <span class="field-err" id="rn-err" style="display:none"></span>
+      </div>
+      <div><label>店铺归属者</label>
+        ${membersLoadErr
+          ? `<span class="field-err" style="display:block">${esc(membersLoadErr)}</span>`
+          : members.length === 0
+            ? `<span class="field-err" style="display:block">系统中没有可用的普通成员，请先创建成员账号</span>`
+            : `<select id="rn-owner" style="width:100%;height:44px">
+                 ${members.map(m => `<option value="${esc(m.user_id)}" ${m.user_id === currentOwnerId ? "selected" : ""}>${esc(m.username)}（${esc(m.user_id)}）</option>`).join("")}
+               </select>`}
+        <span class="field-err" id="owner-err" style="display:none"></span>
+      </div>
+      <div><label>店铺状态</label>
+        <input value="${esc(statusText)}" readonly style="width:100%;height:44px;background:#f1f5f9;color:var(--text-light)">
+        <div style="font-size:12px;color:var(--text-light);margin-top:2px">状态修改请使用"启用/停用"操作</div>
       </div>`,
     actions: [
       { text: "取消", kind: "secondary", onClick: () => {} },
@@ -448,173 +443,51 @@ function renameStore(storeId, currentName) {
             input.focus();
             return false;
           }
-          const r = await API.post(`/api/stores/${storeId}/rename`, { name });
-          toast(`店铺已重命名：${r.old_name || currentName} → ${r.name}`, "success");
-          closeModal();
-          loadStores();
+          const ownerSelect = document.getElementById("rn-owner");
+          const newOwnerId = ownerSelect ? ownerSelect.value : null;
+          if (!newOwnerId) {
+            fieldErr("owner-err", "请选择归属者");
+            return false;
+          }
+          const expectedUpdatedAt = store.updated_at || null;
+          try {
+            let currentUpdatedAt = expectedUpdatedAt;
+            if (name !== store.name) {
+              const renameRes = await API.post(
+                `/api/stores/${storeId}/rename`,
+                { name, expected_updated_at: currentUpdatedAt });
+              currentUpdatedAt = renameRes.data?.updated_at || currentUpdatedAt;
+            }
+            if (newOwnerId !== currentOwnerId) {
+              await API.post(
+                `/api/stores/${storeId}/transfer-ownership`,
+                { target_user_id: newOwnerId,
+                  expected_updated_at: name !== store.name ? null : currentUpdatedAt });
+              toast(`店铺归属者已更新为 ${members.find(m => m.user_id === newOwnerId)?.username || newOwnerId}`, "success");
+            } else if (name !== store.name) {
+              toast(`店铺已重命名：${store.name} → ${name}`, "success");
+            }
+            closeModal();
+            loadStores();
+          } catch (e) {
+            const msg = e.message || "保存失败";
+            const errData = e.data || {};
+            if (errData.rollback_failed) {
+              toast(`保存失败，数据恢复异常，请检查系统日志：${msg}`, "error", 8000);
+            } else if (e.code === 409) {
+              toast(msg, "error", 5000);
+            } else if (name !== store.name && newOwnerId !== currentOwnerId) {
+              toast(`名称可能已更新，但归属变更失败：${msg}`, "error", 5000);
+            } else {
+              toast(`保存失败，已恢复原始数据：${msg}`, "error", 5000);
+            }
+            return false;
+          }
         } },
     ],
   });
   const input = document.getElementById("rn-input");
-  input.focus();
-  input.select();
-  input.oninput = () => fieldErr("rn-err", "");
-}
-
-/* ==================== 修改店铺归属弹窗（两步确认） ==================== */
-async function openTransferOwnership(storeId, storeName) {
-  let users;
-  try {
-    users = (await API.get("/api/users")).users || [];
-  } catch (e) {
-    toast(e.message || "获取成员清单失败", "error");
-    return;
-  }
-  // 仅列出有效的普通成员: member 角色 + 启用状态（管理员账号与停用成员不出现在候选列表）
-  const members = users.filter(u => u.role === "member" && u.status === "active");
-  const current = CURRENT_STORES.find(x => x.store_id === storeId) || {};
-  const currentOwnerText = current.owner_username
-    ? `${current.owner_username}（${current.owner_user_id || ""}）`
-    : (current.assignment_status === "unassigned" ? "待分配（无归属成员）"
-      : current.assignment_status === "admin_legacy" ? "管理员遗留" : "—");
-  let selected = null;
-  const renderList = (keyword) => {
-    const kw = (keyword || "").trim().toLowerCase();
-    const rows = members.filter(m => !kw || (m.username || "").toLowerCase().includes(kw));
-    const emptyHtml = members.length
-      ? `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px">无匹配成员</div>`
-      : `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px">暂无可用的普通成员（需先创建或启用普通成员账号），无法修改归属</div>`;
-    document.getElementById("to-list").innerHTML = rows.length ? rows.map(m => `
-      <label class="mp-item">
-        <input type="radio" name="to-target" value="${esc(m.user_id)}">
-        <span class="mp-name"><b>${esc(m.username)}</b></span>
-        <span class="mp-id">${esc(m.user_id)}</span>
-        <span class="mp-meta">当前店铺：${esc((m.store_names || []).filter(Boolean).join("、") || "无")}</span>
-      </label>`).join("") : emptyHtml;
-    document.querySelectorAll('#to-list input[name="to-target"]').forEach(r => {
-      r.onchange = () => {
-        selected = members.find(m => m.user_id === r.value) || null;
-        document.getElementById("to-next").disabled = !selected;
-      };
-    });
-  };
-  openModal({
-    title: `修改店铺归属 - ${storeName}`,
-    width: 600,
-    bodyHtml: `
-      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:10px">
-        <div>店铺名称：<b>${esc(storeName)}</b></div>
-        <div>店铺 ID：<span style="font-family:monospace;font-size:12px">${esc(storeId)}</span></div>
-        <div>当前归属成员：<b>${esc(currentOwnerText)}</b></div>
-      </div>
-      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-bottom:10px">
-        店铺 ID 与全部业务数据保持不变，仅变更归属成员；下方列表仅显示启用状态的普通成员，不包含管理员账号。
-      </div>
-      <div><label>按用户名搜索目标成员</label>
-        <input id="to-search" placeholder="输入用户名关键词过滤" autocomplete="off">
-        <span class="field-err" id="to-err" style="display:none"></span>
-      </div>
-      <div class="member-pick-list" id="to-list"></div>`,
-    actions: [
-      { text: "取消", kind: "secondary", onClick: () => {} },
-      { text: "下一步：确认变更", kind: "primary", disabled: true, onClick: () => {
-          if (!selected) {
-            document.getElementById("to-err").textContent = "请选择新的归属成员";
-            document.getElementById("to-err").style.display = "block";
-            return false;
-          }
-          confirmTransferOwnership(storeId, storeName, selected);
-        } },
-    ],
-  });
-  renderList("");
-  document.getElementById("to-search").oninput = e => renderList(e.target.value);
-}
-
-/* 二次确认：完整展示店铺名/原归属/新归属三要素，取消不发请求 */
-function confirmTransferOwnership(storeId, storeName, target) {
-  openModal({
-    title: "确认修改店铺归属",
-    width: 560,
-    bodyHtml: `
-      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
-        <div>店铺名称：<b>${esc(storeName)}</b>（<span style="font-family:monospace;font-size:12px">${esc(storeId)}</span>）</div>
-        <div id="ct-prev">原归属：读取中…</div>
-        <div>新归属：<b>${esc(target.username)}</b>（<span style="font-family:monospace;font-size:12px">${esc(target.user_id)}</span>）</div>
-      </div>
-      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-top:8px">
-        变更后：店铺 ID 与全部业务数据记录数保持不变；原归属成员的本店访问权限即时收回（会话吊销需重新登录），目标成员获得该店铺。
-      </div>`,
-    actions: [
-      { text: "取消", kind: "secondary", onClick: () => {} },
-      { text: "确认变更归属", kind: "danger", onClick: async () => {
-          const r = await API.post(
-            `/api/stores/${storeId}/transfer-ownership`,
-            { target_user_id: target.user_id });
-          showTransferResult(r);
-        } },
-    ],
-  });
-  API.get("/api/admin/all-stores").then(d => {
-    const s = ((d.stores || []).find(x => x.store_id === storeId) || {});
-    const prev = s.owner_username
-      ? `${s.owner_username}（${s.owner_user_id}）`
-      : (s.assignment_status === "admin_legacy" ? "管理员遗留" : "待分配");
-    const el = document.getElementById("ct-prev");
-    if (el) el.innerHTML = `原归属：${esc(prev)}`;
-  }).catch(() => {
-    const el = document.getElementById("ct-prev");
-    if (el) el.textContent = "原归属：—";
-  });
-}
-
-/* 变更结果：前后归属对照 + 数据记录数不变说明；归属未变化时如实提示 */
-function showTransferResult(r) {
-  const prev = r.previous_owner
-    ? `${r.previous_owner.username}（${r.previous_owner.user_id}）` : "待分配/无归属";
-  const c = r.record_counts || {};
-  if (r.unchanged) {
-    openModal({
-      title: "归属成员未发生变化",
-      width: 520,
-      bodyHtml: `
-        <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
-          <div>店铺：<b>${esc(r.store_name)}</b>（<span style="font-family:monospace;font-size:12px">${esc(r.store_id)}</span>）</div>
-          <div>当前归属成员：${esc(prev)}</div>
-        </div>
-        <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-top:8px">
-          所选成员与当前归属成员相同，未执行归属变更：店铺归属、业务数据与会话均保持原状。
-        </div>`,
-      actions: [
-        { text: "知道了", kind: "primary", onClick: async () => {
-            loadStores();
-            refreshStats();
-          } },
-      ],
-    });
-    return;
-  }
-  openModal({
-    title: "店铺归属已变更",
-    width: 560,
-    bodyHtml: `
-      <div style="font-size:13px;line-height:1.9;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
-        <div>店铺：<b>${esc(r.store_name)}</b>（<span style="font-family:monospace;font-size:12px">${esc(r.store_id)}</span>）</div>
-        <div>原归属：${esc(prev)}</div>
-        <div>新归属：<b>${esc(r.new_owner.username)}</b>（<span style="font-family:monospace;font-size:12px">${esc(r.new_owner.user_id)}</span>）</div>
-      </div>
-      <div style="font-size:12px;color:var(--success);line-height:1.7;margin-top:8px">
-        ✓ 业务数据完整保留（data_preserved=${r.data_preserved ? "true" : "false"}）：
-        订单 ${c.orders ?? 0} / 成本 ${c.supplier_costs ?? 0} / 退款明细 ${c.refund_details ?? 0} / 导入批次 ${c.import_records ?? 0} 条记录数不变；
-        变更前已自动创建备份，原归属成员会话已吊销。
-      </div>`,
-    actions: [
-      { text: "知道了", kind: "primary", onClick: async () => {
-          loadStores();
-          refreshStats();
-        } },
-    ],
-  });
+  if (input) { input.focus(); input.select(); input.oninput = () => fieldErr("rn-err", ""); }
 }
 
 /* ==================== 标记待分配弹窗 ==================== */

@@ -17,6 +17,7 @@ from decimal import Decimal
 from openpyxl import Workbook
 
 from .data_schemas import now_iso
+from .excel_export import append_row
 from .normalizer import money_str
 from .refund_view import (SUCCESS_STATUSES, build_refund_views,
                           order_level_amount)
@@ -232,56 +233,6 @@ class OrderQueryService:
             total += _dec(d.get("refund_amount"))
         return total
 
-    # ==================== 退款明细（逐笔） ====================
-    def list_refund_details(self, time_field="apply_time", start=None, end=None,
-                            order_id=None, refund_status=None, keyword=None,
-                            page=1, size=50):
-        if time_field not in REFUND_DETAIL_TIME_FIELDS:
-            time_field = "apply_time"
-        records = self.repo.read("refund_details")["records"]
-        rows = []
-        for d in records:
-            if order_id and d.get("order_id") != order_id:
-                continue
-            if keyword and keyword.lower() not in (d.get("order_id") or "").lower():
-                continue
-            if refund_status and d.get("refund_status") != refund_status:
-                continue
-            rt = d.get("refund_time")
-            if time_field == "apply_time":
-                if not in_range(rt, start, end):
-                    continue
-            else:
-                if d.get("refund_status") not in SUCCESS_STATUSES:
-                    continue
-                if not in_range(rt, start, end):
-                    continue
-            rows.append(d)
-        rows.sort(key=lambda d: ((d.get("refund_time") or d.get("created_at") or ""),
-                                 d.get("record_id") or ""))
-        rows.reverse()
-
-        total_amt = success_t = pending_t = closed_t = Decimal("0")
-        for d in rows:
-            amt = _dec(d.get("refund_amount"))
-            total_amt += amt
-            st = d.get("refund_status")
-            if st in SUCCESS_STATUSES:
-                success_t += amt
-            elif st == "pending":
-                pending_t += amt
-            elif st == "closed":
-                closed_t += amt
-
-        stats = {
-            "refund_detail_count": len(rows),
-            "total_refund_amount": money_str(total_amt),
-            "success_refund_amount": money_str(success_t),
-            "pending_refund_amount": money_str(pending_t),
-            "closed_refund_amount": money_str(closed_t),
-            "time_field": time_field,
-        }
-        return self._paginate(rows, page, size, stats, "details")
 
     # ==================== 订单详情 ====================
     def get_order(self, order_id):
@@ -410,9 +361,9 @@ class OrderQueryService:
         wb = Workbook()
         ws = wb.active
         ws.title = sheet_title
-        ws.append(headers)
+        append_row(ws, headers)
         for r in rows:
-            ws.append(row_of(r))
+            append_row(ws, row_of(r))
         for col in money_cols:
             for cell in ws.iter_cols(min_col=col, max_col=col, min_row=2):
                 for c in cell:
@@ -438,60 +389,6 @@ class OrderQueryService:
         }, operator=operator)
         return filename, buf.getvalue()
 
-    def export_refund_details_excel(self, operator="admin", **filters):
-        """导出逐笔退款明细（与列表筛选完全一致）；无数据抛 ValueError"""
-        data = self.list_refund_details(
-            time_field=filters.get("time_field") or "apply_time",
-            start=filters.get("start"), end=filters.get("end"),
-            order_id=filters.get("order_id"),
-            refund_status=filters.get("refund_status"),
-            keyword=filters.get("keyword"), page=1, size=10 ** 9)
-        rows = data["details"]
-        if not rows:
-            raise ValueError("当前筛选无数据可导出")
-
-        headers = ["订单号", "退款金额", "退款状态", "状态来源", "退款时间",
-                   "退款粒度", "原售后文本", "源工作表/行号", "导入批次", "记录时间"]
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "退款明细"
-        ws.append(headers)
-        for r in rows:
-            ws.append([
-                r.get("order_id"), _dec(r.get("refund_amount")),
-                REFUND_STATUS_LABELS.get(r.get("refund_status"), r.get("refund_status")),
-                "推导" if r.get("status_source") == "derived" else "平台原始",
-                r.get("refund_time"),
-                "订单级待核对" if r.get("refund_amount_granularity") == "unknown" else "商品行级",
-                r.get("raw_after_sale_text") or "",
-                f"{r.get('sheet_name') or ''} 第{r.get('row_number')}行",
-                r.get("batch_id") or "", r.get("created_at") or "",
-            ])
-        for cell in ws.iter_cols(min_col=2, max_col=2, min_row=2):
-            for c in cell:
-                c.number_format = "0.00"
-        buf = io.BytesIO()
-        wb.save(buf)
-
-        filename = f"退款明细_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        record = {
-            "record_id": "exp_" + datetime.now().strftime("%Y%m%d%H%M%S") + "_"
-                         + str(len(self.repo.read("export_records")["records"]) + 1),
-            "kind": "refund_details", "file_name": filename, "row_count": len(rows),
-            "filters": {k: v for k, v in filters.items() if v is not None},
-            "exported_at": now_iso(), "exported_by": operator,
-        }
-
-        def mutator(d):
-            d["records"].append(record)
-            d["updated_at"] = now_iso()
-            return d
-        self.repo.update("export_records", mutator)
-        self.op_log.append("data.export", detail={
-            "kind": "refund_details", "row_count": len(rows),
-            "file_name": filename,
-        }, operator=operator)
-        return filename, buf.getvalue()
 
     # ==================== 内部工具 ====================
     @staticmethod

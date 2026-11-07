@@ -1,7 +1,8 @@
-/* 公共弹窗组件（users/create_user/stores 三页共用）
+/* 公共弹窗组件（管理页表单 + 订单/成本/利润/对账等只读详情共用）
    依赖: api.js 的 esc()/toast()（modal.js 须在 api.js 之后引用）
    约定: overlay id 统一为 um-modal, 同屏互斥单弹窗;
-         openModal 为新统一入口; confirmModal/inputModal 为向后兼容的薄封装 */
+         openModal 为新统一入口; confirmModal/inputModal 为向后兼容的薄封装;
+         openDrawer 为右侧抽屉形态（详情查看场景） */
 
 const _escCloseHooks = [];
 function onEscClose(fn) { if (typeof fn === "function") _escCloseHooks.push(fn); }
@@ -55,6 +56,7 @@ function openModal({ title, bodyHtml, width, actions, onClose }) {
       try {
         const ret = await a.onClick(btn);
         if (ret !== false) doClose();
+        else { btn.disabled = false; btn.textContent = a.text || "确认"; }
       } catch (e) {
         if (msg) {
           msg.textContent = (e && e.message) || "操作失败，请重试";
@@ -108,6 +110,15 @@ function inputModal({ title, bodyHtml, expected, expectedLabel, confirmText, onO
 function closeModal() {
   const m = document.getElementById("um-modal");
   if (m) m.remove();
+}
+
+/* 右侧抽屉: 复用 openModal 逻辑, 仅给 overlay 追加 .modal-drawer 类以切换为右侧滑出布局。
+   适用: 订单详情/退款汇总/成本匹配/日志详情等复杂只读展示场景。
+   API 与 openModal 完全一致: { title, bodyHtml, width, actions, onClose } */
+function openDrawer({ title, bodyHtml, width, actions, onClose }) {
+  openModal({ title, bodyHtml, width: width || 480, actions, onClose });
+  const overlay = document.getElementById("um-modal");
+  if (overlay) overlay.classList.add("modal-drawer");
 }
 
 /* 全局 Esc: 优先关闭展开的"更多"下拉菜单（各页面经 onEscClose 注册）, 再关闭弹窗;

@@ -10,7 +10,8 @@
 - anomalies           异常记录（exception_record）
 - supplier_cost_items 预留：成本拆分明细（后续阶段使用）
 - export_records      数据导出记录
-- ad_expenses         月度广告花费记录（唯一允许人工编辑的财务金额）
+- ad_expenses         月度广告花费记录（允许人工编辑的财务金额）
+- other_expenses      月度其他费用（允许人工编辑金额和说明）
 - reconciliation_results / profit_statements 后续阶段使用
 """
 from datetime import datetime
@@ -150,7 +151,15 @@ BUSINESS_FILES = {
     },
     "ad_expenses": {
         "file": "ad_expenses.json",
-        "description": "月度广告花费记录（唯一允许人工编辑的财务金额）",
+        "description": "月度广告花费记录（允许人工编辑的财务金额）",
+        "required_keys": ["version", "updated_at", "records"],
+        "collection_key": "records",
+        "collection_type": list,
+        "initial": _records_file,
+    },
+    "other_expenses": {
+        "file": "other_expenses.json",
+        "description": "月度其他费用（允许人工编辑金额和说明）",
         "required_keys": ["version", "updated_at", "records"],
         "collection_key": "records",
         "collection_type": list,

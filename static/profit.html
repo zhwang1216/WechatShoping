@@ -2,86 +2,62 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>利润核算 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
 <style>
-.stat-item .sub{font-size:11px;color:var(--text-light,#6b7280);margin-top:2px}
 .formula-box{background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:10px 12px;margin:6px 0;font-size:13px;line-height:1.7}
 .formula-box b{color:#0f172a}
 .parts-table td{font-size:12px}
-.policy-select{min-width:230px}
-.profit-pos{color:var(--success,#16a34a);font-weight:700}
-.profit-neg{color:var(--danger,#dc2626);font-weight:700}
+.policy-select{min-width:min(230px,100%);max-width:100%}
+@media (max-width: 768px) {
+  .policy-select{width:100%;min-width:0}
+}
 </style>
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard">经营总览</a>
-    <a href="/data-import">数据导入</a>
-    <a href="/orders">普通订单</a>
-    <a href="/refund-orders">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation">对账成本</a>
-    <a href="/profit" class="active">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create">创建用户</a>
-      <a href="/stores">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-    <span class="meta" id="nav-meta"></span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
+<!--@app-shell-->
   <div class="page-title">利润核算</div>
   <div class="page-desc">按确认口径计算订单级经营贡献利润；口径未确认、成本重复风险未解决或必要数据缺失时显示"待确认/不可计算"，禁止误导性最终利润。月份筛选按订单下单时间归属（左闭右开区间），统计卡片与表格同筛选。</div>
   <div class="declare-banner" id="declaration"></div>
 
-  <div class="card">
-    <h3>口径配置与重算</h3>
-    <div class="filter-bar" style="align-items:flex-end;flex-wrap:wrap">
-      <div class="filter-item">
-        <label>退款口径（实收是否已扣退款）</label>
-        <select class="policy-select" id="policy-refund">
-          <option value="unknown">未确认（有退款时利润显示待确认）</option>
-          <option value="not_deducted">未扣除（净收入 = 实收 − 成功退款）</option>
-          <option value="deducted">已扣除（净收入 = 实收，不重复扣减）</option>
-        </select>
-      </div>
-      <div class="filter-item">
-        <label>平台补贴口径</label>
-        <select class="policy-select" id="policy-subsidy">
-          <option value="unknown">未确认（补贴单列展示，不计入利润）</option>
-          <option value="not_included">未含于实收（已确认，计入利润）</option>
-          <option value="included">已含于实收（不重复计入）</option>
-        </select>
-      </div>
-      <button class="btn secondary" id="btn-save-config">保存口径</button>
-      <button class="btn" id="btn-recalc">执行核算（全部数据）</button>
+  <div class="collapse-card" id="policy-card">
+    <div class="collapse-head" id="policy-head">
+      <h3>口径配置与重算</h3>
+      <span class="head-info" id="policy-head-info"></span>
+      <button class="collapse-toggle" type="button" aria-label="折叠/展开"></button>
     </div>
-    <div id="calc-meta" style="font-size:12px;color:var(--text-light);margin-top:8px"></div>
+    <div class="collapse-body">
+      <div class="filter-bar" style="align-items:flex-end;flex-wrap:wrap">
+        <div class="filter-item">
+          <label>退款口径（实收是否已扣退款）</label>
+          <select class="policy-select" id="policy-refund">
+            <option value="unknown">未确认（有退款时利润显示待确认）</option>
+            <option value="not_deducted">未扣除（净收入 = 实收 − 成功退款）</option>
+            <option value="deducted">已扣除（净收入 = 实收，不重复扣减）</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label>平台补贴口径</label>
+          <select class="policy-select" id="policy-subsidy">
+            <option value="unknown">未确认（补贴单列展示，不计入利润）</option>
+            <option value="not_included">未含于实收（已确认，计入利润）</option>
+            <option value="included">已含于实收（不重复计入）</option>
+          </select>
+        </div>
+        <button class="btn secondary" id="btn-save-config">保存口径</button>
+        <button class="btn" id="btn-recalc">执行核算（全部数据）</button>
+      </div>
+      <div id="calc-meta" style="font-size:12px;color:var(--text-light);margin-top:8px"></div>
+    </div>
   </div>
 
   <div id="month-filter"></div>
   <div id="store-scope"></div>
 
-  <div class="stat-grid" id="stat-cards"></div>
+  <div class="stat-grid" id="stat-status"></div>
+  <div class="stat-grid" id="stat-cost"></div>
+  <div class="stat-grid" id="stat-revenue"></div>
 
   <div class="card table-card">
     <div class="card-head"><h3 style="margin:0">订单利润明细</h3>
@@ -120,17 +96,9 @@
   </div>
 </div>
 
-<!-- 计算明细模态（人工复核） -->
-<div class="modal-mask" id="detail-modal">
-  <div class="modal" style="max-width:760px">
-    <div class="modal-head"><h3 id="dm-title">计算明细</h3>
-      <button class="modal-close" onclick="closeDetail()">×</button></div>
-    <div class="modal-body" id="dm-body"></div>
-  </div>
-</div>
-
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/modal.js"></script>
 <script src="/static/auth_nav.js"></script>
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
@@ -140,6 +108,17 @@ const STATUS_META = {
   calculated: ["已计算", "green"], pending_confirmation: ["待确认", "orange"],
   not_calculable: ["不可计算", "gray"], needs_review: ["需复核", "blue"],
 };
+function profitBadge(status) {
+  const known = STATUS_META[status];
+  const label = known ? known[0] : (status || "—");
+  const color = known ? known[1] : "gray";
+  return `<span class="badge ${color}">${esc(label)}</span>`;
+}
+function marginCell(mg) {
+  mg = mg || {};
+  if (mg.percent) return esc(mg.percent);
+  return `<span style="color:var(--text-light)" title="${esc(mg.blocked_reason_label || "")}">—</span>`;
+}
 const REASON_LABELS = {};
 let currentRows = [];
 
@@ -155,6 +134,13 @@ let currentRows = [];
       location.pathname + (p.toString() ? `?${p.toString()}` : "") + location.hash);
   }
 })();
+
+let followedDataMonth = false;
+
+function timeFilterExplicit() {
+  const q = new URLSearchParams(location.search);
+  return q.has("month") || q.has("from") || q.has("to") || q.get("t") === "all";
+}
 
 const MF = new MonthFilter({
   container: "month-filter",
@@ -195,6 +181,16 @@ async function load(page = 1, size = 50) {
   try {
     const data = await API.get(`/api/profit?${p.toString()}`);
     currentRows = data.results || [];
+    const narrowed = document.getElementById("f-order").value.trim()
+      || document.getElementById("f-status").value;
+    if (!followedDataMonth && !timeFilterExplicit() && !narrowed
+        && data.total === 0 && data.latest_order_month
+        && data.latest_order_month !== MF.state.month) {
+      followedDataMonth = true;
+      toast(`本月没有利润记录，已显示 ${data.latest_order_month} 的技术服务费合计`, "info");
+      MF._set({ mode: "month", month: data.latest_order_month, from: "", to: "" });
+      return;
+    }
     renderStats(data);
     renderCalcMeta(data);
     state.innerHTML = "";
@@ -206,11 +202,13 @@ async function load(page = 1, size = 50) {
     }
     if (!currentRows.length) {
       tbody.innerHTML = "";
-      state.innerHTML = `<div class="empty-state"><div class="icon">📭</div>当前筛选无利润记录</div>`;
+      const jump = data.latest_order_month && data.latest_order_month !== MF.state.month
+        ? `<br><span style="font-size:12px">订单在 ${esc(data.latest_order_month)}。<button type="button" class="link-btn" id="jump-fee-month">查看该月技术服务费合计</button></span>`
+        : "";
+      state.innerHTML = `<div class="empty-state"><div class="icon">📭</div>当前筛选无利润记录${jump}</div>`;
     } else {
       tbody.innerHTML = currentRows.map((r, i) => {
         const a = r.amounts || {};
-        const [sl, sc] = STATUS_META[r.profit_status] || [r.profit_status, "gray"];
         const profit = a.operating_contribution_profit;
         const pcls = profit === null || profit === undefined ? "" : (Number(profit) >= 0 ? "profit-pos" : "profit-neg");
         const mg = (r.margin || {});
@@ -225,8 +223,8 @@ async function load(page = 1, size = 50) {
           <td class="num">${fmtMoney(a.supplier_total_amount)}</td>
           <td class="num">${fmtMoney(a.technical_service_fee)}</td>
           <td class="num ${pcls}">${profit === null || profit === undefined ? "—" : fmtMoney(profit)}</td>
-          <td>${mg.percent || `<span style="color:var(--text-light)" title="${esc(mg.blocked_reason_label || "")}">—</span>`}</td>
-          <td><span class="badge ${sc}">${sl}</span></td>
+          <td>${marginCell(mg)}</td>
+          <td>${profitBadge(r.profit_status)}</td>
           <td class="col-op"><button class="link-btn" onclick="showDetail(${i})">明细</button></td>
         </tr>`;
       }).join("");
@@ -235,6 +233,11 @@ async function load(page = 1, size = 50) {
       onPage: pg => load(pg, size),
       onSize: sz => load(1, sz),
     });
+    const jump = document.getElementById("jump-fee-month");
+    if (jump) jump.onclick = () => {
+      followedDataMonth = true;
+      MF._set({ mode: "month", month: data.latest_order_month, from: "", to: "" });
+    };
   } catch (e) {
     state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
   }
@@ -252,29 +255,37 @@ function fmtMoneyThousands(v) {
 
 function renderStats(data) {
   const s = data.statistics || {};
-  const cards = [
+  const noCalc = data.has_calculation === false;
+  const statusCards = [
     ["订单总数", s.total ?? 0, ""],
     ["已计算", s.calculated ?? 0, "var(--success)"],
     ["待确认", s.pending_confirmation ?? 0, "var(--warning)"],
     ["不可计算", s.not_calculable ?? 0, "var(--text-light)"],
     ["需复核", s.needs_review ?? 0, "#0f766e"],
-    ["可计算订单利润合计", fmtMoney(s.profit_total), "var(--success)"],
   ];
-  document.getElementById("stat-cards").innerHTML = cards.map(([l, v, c]) =>
+  document.getElementById("stat-status").innerHTML = statusCards.map(([l, v, c]) =>
     `<div class="stat-item"><div class="label">${l}</div><div class="value" style="${c ? `color:${c}` : ""}">${v}</div></div>`).join("");
 
-  const noCalc = data.has_calculation === false;
   const costCards = [
     ["产品成本合计", s.product_cost_total, s.product_cost_missing_count],
     ["快递费合计", s.courier_fee_total, s.courier_fee_missing_count],
     ["综合成本合计", s.composite_cost_total, null],
   ];
-  document.getElementById("stat-cards").innerHTML += costCards.map(([l, v, m]) => {
-    const val = (noCalc || v === undefined || v === null) ? "—" : fmtMoneyThousands(v);
+  document.getElementById("stat-cost").innerHTML = costCards.map(([l, v, m]) => {
+    const val = (noCalc || v === undefined || v === null) ? "—" : fmtMoney(v);
     const badge = (!noCalc && typeof m === "number" && m > 0)
       ? `<div class="sub"><span class="badge orange">${m} 单待核对</span></div>` : "";
     return `<div class="stat-item"><div class="label">${l}</div><div class="value">${val}</div>${badge}</div>`;
   }).join("");
+
+  const revCards = [
+    ["净收入合计", fmtMoney(s.net_revenue_total), ""],
+    ["技术服务费合计", (noCalc || s.technical_service_fee == null) ? "—" : fmtMoney(s.technical_service_fee), ""],
+    ["可计算贡献利润合计", fmtMoney(s.profit_total), "var(--success)"],
+    ["利润率", s.profit_margin || "—", "var(--success)"],
+  ];
+  document.getElementById("stat-revenue").innerHTML = revCards.map(([l, v, c]) =>
+    `<div class="stat-item"><div class="label">${l}</div><div class="value" style="${c ? `color:${c}` : ""}">${v}</div></div>`).join("");
 }
 
 function renderCalcMeta(data) {
@@ -282,23 +293,39 @@ function renderCalcMeta(data) {
   document.getElementById("calc-meta").innerHTML = run
     ? `最新核算：${esc(run.record_id)} · 规则版本 ${esc(run.rules_version)} · 核算时间 ${esc(fmtTime(run.created_at))} · 当前展示该版本结果（历史版本保留，可追溯）`
     : "尚未执行利润核算";
+  const headInfo = document.getElementById("policy-head-info");
+  if (headInfo) {
+    headInfo.textContent = run
+      ? `规则版本 ${run.rules_version || ""} · 生效 ${fmtTime(run.created_at)}`
+      : "尚未核算";
+  }
 }
+
+(() => {
+  const card = document.getElementById("policy-card");
+  const head = document.getElementById("policy-head");
+  if (!card || !head) return;
+  if (localStorage.getItem("wxr_profit_policy_collapsed") === "1") card.classList.add("collapsed");
+  head.addEventListener("click", () => {
+    card.classList.toggle("collapsed");
+    localStorage.setItem("wxr_profit_policy_collapsed",
+      card.classList.contains("collapsed") ? "1" : "0");
+  });
+})();
 
 function showDetail(i) {
   const r = currentRows[i];
   const a = r.amounts || {}, f = r.formula || {}, t = r.trace || {};
-  const [sl, sc] = STATUS_META[r.profit_status] || [r.profit_status, "gray"];
   const reasons = (r.status_reasons || []).map(x => `<span class="badge orange">${esc(REASON_LABELS[x] || x)}</span>`).join(" ") || "—";
   const parts = Object.entries(r.cost_parts_display_only || {})
     .map(([k, v]) => `<td>${esc({product_supply_cost:"成本",courier_fee:"快递费",foam_material_fee:"泡沫耗材费",surcharge:"加收",fuel_or_tianjin_packing_fee:"燃油费/打包费",courier_fee_total:"快递费合计"}[k] || k)}</td><td class="num">${fmtMoney(v)}</td>`).join("");
-  document.getElementById("dm-title").textContent = `计算明细（${r.order_id}）`;
-  document.getElementById("dm-body").innerHTML = `
+  const html = `
     <div class="detail-section"><h4>结果</h4>
       <div class="kv-grid">
-        <div class="kv"><div class="k">利润状态</div><div class="v"><span class="badge ${sc}">${sl}</span></div></div>
+        <div class="kv"><div class="k">利润状态</div><div class="v">${profitBadge(r.profit_status)}</div></div>
         <div class="kv"><div class="k">状态原因</div><div class="v">${reasons}</div></div>
         <div class="kv"><div class="k">经营贡献利润</div><div class="v">${a.operating_contribution_profit === null ? "—" : fmtMoneyYuan(a.operating_contribution_profit)}</div></div>
-        <div class="kv"><div class="k">利润率</div><div class="v">${(r.margin || {}).percent || `—（${esc((r.margin || {}).blocked_reason_label || "")}）`}</div></div>
+        <div class="kv"><div class="k">利润率</div><div class="v">${(r.margin || {}).percent ? esc((r.margin || {}).percent) : `—（${esc((r.margin || {}).blocked_reason_label || "")}）`}</div></div>
       </div>
     </div>
     <div class="detail-section"><h4>计算公式（人工复核）</h4>
@@ -333,9 +360,8 @@ function showDetail(i) {
         <div class="kv"><div class="k">对账批次</div><div class="v">${esc(t.reconciliation_id || "—")}</div></div>
       </div>
     </div>`;
-  document.getElementById("detail-modal").classList.add("show");
+  openDrawer({ title: `计算明细（${r.order_id}）`, width: 760, bodyHtml: html });
 }
-function closeDetail() { document.getElementById("detail-modal").classList.remove("show"); }
 
 document.getElementById("btn-save-config").onclick = async function () {
   this.disabled = true;

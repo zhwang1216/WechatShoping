@@ -34,7 +34,8 @@ from app.data_schemas import BUSINESS_FILES
 from tests.http_client import Client, TestEnv
 from tests.test_auth_isolation import make_sup_xlsx, make_wx_xlsx
 from tests.test_multi_store_admin import TestMultiStoreAdmin
-from tests.test_page_routes import MGMT_ORDER, NAV_ORDER, PAGE_FEATURES
+from tests.test_page_routes import (EXPECTED_LINKS, MGMT_ORDER, NAV_ORDER,
+                                    PAGE_FEATURES)
 
 CARRIER_PASSWORD = "Carrier123456"
 TR_PASSWORD = "Tr012345678"
@@ -681,8 +682,6 @@ class TestMemberFilter(unittest.TestCase):
             "/api/orders/export?month=2026-03",
             "/api/refund-orders?page=1&size=20",
             "/api/refund-orders/export?month=2026-03",
-            "/api/refund-details?page=1&size=20",
-            "/api/refund-details/export?month=2026-03",
             "/api/supplier-costs?page=1&size=20",
             "/api/supplier-costs/export?month=2026-03",
             "/api/anomalies?page=1&size=20",
@@ -1296,8 +1295,6 @@ class TestPermissionMatrix(unittest.TestCase):
         "/api/orders/export?month=2026-03",
         "/api/refund-orders?page=1&size=20",
         "/api/refund-orders/export?month=2026-03",
-        "/api/refund-details?page=1&size=20",
-        "/api/refund-details/export?month=2026-03",
         "/api/supplier-costs?page=1&size=20",
         "/api/supplier-costs/export?month=2026-03",
         "/api/anomalies?page=1&size=20",
@@ -1603,7 +1600,7 @@ class TestFrontendAssets(unittest.TestCase):
     # ---------- 店铺归属管理区块（nav_user_mgmt 拆分后落位 stores.html） ----------
     def test_03_users_page_ownership_management(self):
         html = self.assets["stores.html"]
-        for token in ("openTransferOwnership", "markUnassigned",
+        for token in ("editStore", "markUnassigned",
                       "showMigrationOverview", "btn-migration-overview",
                       "/api/admin/all-stores", "assignment_status"):
             self.assertIn(token, html)
@@ -1644,8 +1641,7 @@ class TestFrontendAssets(unittest.TestCase):
             links = re.findall(
                 r'<a href="([^"]+)"(?: class="active")?>([^<]+)</a>',
                 nav.group(1))
-            self.assertEqual(links[:len(NAV_ORDER)], NAV_ORDER, page)
-            self.assertEqual(links[len(NAV_ORDER):], MGMT_ORDER, page)
+            self.assertEqual(links, EXPECTED_LINKS, page)
 
     # ---------- spec 5.7.2 验收 1-12 ↔ 用例映射表（机器可校验） ----------
     def test_06_acceptance_checklist_mapping(self):

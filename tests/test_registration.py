@@ -85,7 +85,6 @@ def _list_totals(client):
     cases = {
         "orders": "/api/orders?page=1&size=100",
         "refund_orders": "/api/refund-orders?page=1&size=100",
-        "refund_details": "/api/refund-details?page=1&size=100",
         "supplier_costs": "/api/supplier-costs?page=1&size=100",
         "reconciliation": "/api/reconciliation?page=1&size=100",
         "profit": "/api/profit?page=1&size=100",
@@ -223,7 +222,6 @@ class TestRegistrationAcceptance(unittest.TestCase):
         cases = [
             "/api/orders?page=1&size=100",
             "/api/refund-orders?page=1&size=100",
-            "/api/refund-details?page=1&size=100",
             "/api/supplier-costs?page=1&size=100",
             "/api/reconciliation?page=1&size=100",
             "/api/profit?page=1&size=100",

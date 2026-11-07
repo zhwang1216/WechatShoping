@@ -1,15 +1,19 @@
 """全局配置：路径、监听地址、备份策略"""
 import os
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-BACKUP_DIR = os.path.join(BASE_DIR, "backups")
-LOG_DIR = os.path.join(BASE_DIR, "logs")
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+from .runtime_paths import resolve_paths
+
+_paths = resolve_paths()
+
+BASE_DIR = _paths.runtime_root
+DATA_DIR = os.path.join(_paths.runtime_root, "data")
+BACKUP_DIR = os.path.join(_paths.runtime_root, "backups")
+LOG_DIR = os.path.join(_paths.runtime_root, "logs")
+UPLOAD_DIR = os.path.join(_paths.runtime_root, "uploads")
+STATIC_DIR = os.path.join(_paths.bundle_root, "static")
 
 HOST = "127.0.0.1"
-PORT = 8765
+PORT = 19222
 
 OPERATION_LOG_FILE = "operation_log.jsonl"
 

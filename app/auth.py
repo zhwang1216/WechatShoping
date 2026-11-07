@@ -36,10 +36,11 @@ PASSWORD_MIN = 8
 class AuthError(Exception):
     """认证/授权错误; message 面向用户（中文）"""
 
-    def __init__(self, message, code=400, http_status=400):
+    def __init__(self, message, code=400, http_status=400, extra=None):
         super().__init__(message)
         self.code = code
         self.http_status = http_status
+        self.extra = extra or {}
 
 
 # ==================== 密码哈希 ====================
@@ -405,8 +406,13 @@ class UserManager:
         data = self._read_json(self.stores_path) or {"stores": []}
         return list(data.get("stores", []))
 
-    def rename_store(self, operator, store_id, new_name):
-        """修改店铺名称: store_id 与数据归属保持不变, 仅更新名称与 updated_at"""
+    def rename_store(self, operator, store_id, new_name,
+                     expected_updated_at=None):
+        """修改店铺名称: store_id 与数据归属保持不变, 仅更新名称与 updated_at
+
+        并发保护: 若 expected_updated_at 与当前 updated_at 不一致, 拒绝覆盖
+        （409 Conflict）, 要求前端刷新后重试。
+        """
         if operator.get("role") != "admin":
             raise AuthError("仅管理员可以修改店铺信息", code=403, http_status=403)
         if not isinstance(new_name, str) or not new_name.strip():
@@ -414,7 +420,16 @@ class UserManager:
         new_name = new_name.strip()
         if len(new_name) > 64:
             raise AuthError("店铺名称不能超过 64 个字符")
+        store = self.get_store(store_id)
+        if store is None:
+            raise AuthError(f"店铺不存在: {store_id}", code=404, http_status=404)
+        if (expected_updated_at is not None
+                and store.get("updated_at") != expected_updated_at):
+            raise AuthError(
+                "店铺信息已被其他操作修改，请刷新后重试",
+                code=409, http_status=409)
         old_name = None
+        _now = datetime.now().isoformat()
 
         def mutator(d):
             nonlocal old_name
@@ -422,7 +437,7 @@ class UserManager:
                 if s.get("store_id") == store_id:
                     old_name = s.get("name")
                     s["name"] = new_name
-                    s["updated_at"] = now_iso()
+                    s["updated_at"] = _now
                     break
 
         self._mutate_stores(mutator)
@@ -455,15 +470,17 @@ class UserManager:
             result.append(s)
         return result
 
-    def transfer_store_ownership(self, operator, store_id, target_user_id):
+    def transfer_store_ownership(self, operator, store_id, target_user_id,
+                                 expected_updated_at=None):
         """店铺归属变更: owner 改为目标成员, store_id 与业务数据归属不变
 
-        校验链（顺序固定）: 店铺不存在 404 → 目标用户不存在 404 → 目标已停用 400
-        → 目标为 admin 角色 400;
+        校验链（顺序固定）: 店铺不存在 404 → 并发冲突 409 → 目标用户不存在 404
+        → 目标已停用 400 → 目标为 admin 角色 400;
         一对多归属模型: 目标成员已拥有其他店铺时允许追加绑定;
         店铺待分配（owner 为空）或 admin 遗留 → 允许转交;
         幂等: 目标即当前归属成员 → 直接返回当前归属关系, 不写盘不刷新 updated_at。
-        原子性: 变更前快照 users/stores 两表, 任一步写入异常用快照回滚两表。
+        原子性: 变更前快照 users/stores 两表, 任一步写入异常用快照回滚两表;
+                回滚本身失败时抛出带 rollback_failed 标志的异常。
         """
         if operator.get("role") != "admin":
             raise AuthError("仅管理员可以修改店铺归属", code=403, http_status=403)
@@ -472,6 +489,11 @@ class UserManager:
         store = self.get_store(store_id)
         if store is None:
             raise AuthError(f"店铺不存在: {store_id}", code=404, http_status=404)
+        if (expected_updated_at is not None
+                and store.get("updated_at") != expected_updated_at):
+            raise AuthError(
+                "店铺信息已被其他操作修改，请刷新后重试",
+                code=409, http_status=409)
         target = self.get_user(target_user_id)
         if target is None:
             raise AuthError(f"目标用户不存在: {target_user_id}",
@@ -493,7 +515,7 @@ class UserManager:
                 "data_preserved": True,
             }
         prev_owner = self.get_user(prev_owner_id) if prev_owner_id else None
-        now = now_iso()
+        now = datetime.now().isoformat()
 
         def mutate_store(d):
             for s in d.get("stores", []):
@@ -527,11 +549,25 @@ class UserManager:
             self._mutate_users(mutate_target)
             self._mutate_users(mutate_prev)
         except Exception:
-            if users_snap is not None:
-                self._atomic_write(self.users_path, users_snap)
-            if stores_snap is not None:
-                self._atomic_write(self.stores_path, stores_snap)
-            raise AuthError("变更失败，请重试", code=500, http_status=500)
+            rollback_failed = False
+            rollback_errors = []
+            for label, path, snap in (("stores", self.stores_path, stores_snap),
+                                      ("users", self.users_path, users_snap)):
+                if snap is not None:
+                    try:
+                        self._atomic_write(path, snap)
+                    except Exception as re:
+                        rollback_failed = True
+                        rollback_errors.append(f"{label}: {re}")
+            if rollback_failed:
+                raise AuthError(
+                    "变更失败且数据恢复异常，请检查系统日志: "
+                    + "; ".join(rollback_errors),
+                    code=500, http_status=500,
+                    extra={"rollback_failed": True,
+                           "rollback_errors": rollback_errors})
+            raise AuthError("变更失败，已恢复原始数据", code=500, http_status=500,
+                            extra={"rollback_failed": False})
         return {
             "store_id": store_id,
             "store_name": store.get("name"),
@@ -545,30 +581,36 @@ class UserManager:
         }
 
     def create_store(self, operator, store_name, owner_user_id):
-        """创建新店铺并绑定归属成员（仅管理员; 一对多追加绑定）
+        """创建新店铺并绑定归属成员（管理员代建或普通成员自建; 一对多追加绑定）
 
-        校验链（顺序固定）: operator 非 admin 403 → 店铺名称 1-64 字符 400
-        → 归属成员必选 400 → 目标用户不存在 404 → 目标已停用 400
+        校验链（顺序固定）: operator 非 admin/member 403 → 店铺名称 1-64 字符 400
+        → member 分支: 强制 owner_user_id=operator 本人（忽略前端提交值）
+        → admin 分支: 归属成员必选 400 → 目标用户不存在 404 → 目标已停用 400
         → 目标为 admin 角色 400（admin 永不拥有业务店铺）。
         原子性: 两表内存快照 + 失败补偿回滚; store_id 全局唯一（冲突重试）。
         """
-        if operator.get("role") != "admin":
-            raise AuthError("仅管理员可以创建店铺", code=403, http_status=403)
+        role = operator.get("role")
+        if role not in ("admin", "member"):
+            raise AuthError("仅管理员或普通成员可以创建店铺", code=403, http_status=403)
         if not isinstance(store_name, str) or not store_name.strip():
             raise AuthError("请提供店铺名称（1-64 字符）")
         store_name = store_name.strip()
         if len(store_name) > 64:
             raise AuthError("请提供店铺名称（1-64 字符）")
-        if not isinstance(owner_user_id, str) or not owner_user_id:
-            raise AuthError("请指定归属成员")
-        target = self.get_user(owner_user_id)
-        if target is None:
-            raise AuthError(f"目标用户不存在: {owner_user_id}",
-                            code=404, http_status=404)
-        if target.get("status") != "active":
-            raise AuthError("目标成员已停用，请先启用")
-        if target.get("role") != "member":
-            raise AuthError("不能将店铺分配给管理员账号")
+        if role == "member":
+            owner_user_id = operator.get("user_id")
+            target = operator
+        else:
+            if not isinstance(owner_user_id, str) or not owner_user_id:
+                raise AuthError("请指定归属成员")
+            target = self.get_user(owner_user_id)
+            if target is None:
+                raise AuthError(f"目标用户不存在: {owner_user_id}",
+                                code=404, http_status=404)
+            if target.get("status") != "active":
+                raise AuthError("目标成员已停用，请先启用")
+            if target.get("role") != "member":
+                raise AuthError("不能将店铺分配给管理员账号")
         users_snap = self._read_json(self.users_path)
         stores_snap = self._read_json(self.stores_path)
         existing = {s.get("store_id")

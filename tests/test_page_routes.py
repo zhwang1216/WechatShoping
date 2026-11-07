@@ -1,12 +1,12 @@
-"""页面导航路由测试：10 个页面固定顺序、语义化 URL、默认页、高亮、旧路径兼容
+"""页面导航路由测试：业务页面固定顺序、语义化 URL、默认页、高亮、旧路径兼容
 
 需求口径：
-- 菜单固定顺序：经营总览/数据导入/普通订单/退款订单/退款明细/供应商成本/
-  对账成本/利润核算/异常处理/操作日志
+- 菜单固定顺序：经营总览/数据导入/每月盈利/对账成本/利润核算/
+  普通订单/退款订单/供应商成本/用户管理(组)/异常处理/操作日志
 - 根路径 / 默认进入"经营总览"；刷新按 URL 打开对应页面
 - 每页导航含自身 active 高亮；"对账成本"为标准菜单名
-- admin 视角追加"管理用户"菜单组（组标题"管理用户"，二级项创建用户/店铺管理/
-  用户管理，仅 admin 输出；member 视角由服务端剔除标记块，nav 恰 10 业务项）
+- admin 视角追加"用户管理"菜单组（组标题"用户管理"，二级项创建用户/店铺管理/
+  用户管理，仅 admin 输出；member 视角由服务端剔除标记块，nav 仅含业务项）
 """
 import re
 import unittest
@@ -16,12 +16,12 @@ from tests.http_client import TestEnv
 NAV_ORDER = [
     ("/dashboard", "经营总览"),
     ("/data-import", "数据导入"),
-    ("/orders", "普通订单"),
-    ("/refund-orders", "退款订单"),
-    ("/refund-details", "退款明细"),
-    ("/supplier-costs", "供应商成本"),
+    ("/monthly-profit", "每月盈利"),
     ("/reconciliation", "对账成本"),
     ("/profit", "利润核算"),
+    ("/orders", "普通订单"),
+    ("/refund-orders", "退款订单"),
+    ("/supplier-costs", "供应商成本"),
     ("/anomalies", "异常处理"),
     ("/logs", "操作日志"),
 ]
@@ -32,15 +32,17 @@ MGMT_ORDER = [
     ("/users", "用户管理"),
 ]
 
+EXPECTED_LINKS = NAV_ORDER[:8] + MGMT_ORDER + NAV_ORDER[8:]
+
 PAGE_FEATURES = {
     "/dashboard": "经营总览",
-    "/data-import": "Excel 数据导入",
+    "/data-import": "数据导入",
     "/orders": "普通订单",
     "/refund-orders": "退款订单",
-    "/refund-details": "退款明细",
     "/supplier-costs": "供应商成本",
     "/reconciliation": "对账成本",
     "/profit": "利润核算",
+    "/monthly-profit": "每月盈利",
     "/anomalies": "异常处理",
     "/logs": "操作日志",
 }
@@ -71,7 +73,7 @@ class TestPageRoutes(unittest.TestCase):
         self.assertTrue(headers.get("Content-Type", "").startswith("text/html"))
 
     def test_02_all_page_routes_serve_correct_page(self):
-        """10 个语义路由均返回 200 且内容与页面职责匹配"""
+        """各语义路由均返回 200 且内容与页面职责匹配"""
         for path, feature in PAGE_FEATURES.items():
             with self.subTest(path=path):
                 status, body, headers = self._get(path)
@@ -82,7 +84,7 @@ class TestPageRoutes(unittest.TestCase):
                     headers.get("Content-Type", "").startswith("text/html"))
 
     def test_03_nav_order_and_names_on_every_page(self):
-        """每个页面导航均为固定顺序、固定名称（10 业务项 + 管理菜单组 3 项）"""
+        """每个页面导航均为固定顺序、固定名称（业务项 + 管理菜单组 3 项）"""
         for path, _ in NAV_ORDER:
             with self.subTest(path=path):
                 _, body, _ = self._get(path)
@@ -92,18 +94,15 @@ class TestPageRoutes(unittest.TestCase):
                     r'<a href="([^"]+)"(?: class="active")?>([^<]+)</a>',
                     nav.group(1))
                 self.assertEqual(
-                    links[:len(NAV_ORDER)], NAV_ORDER,
-                    f"{path} 业务导航顺序/名称不符合固定顺序")
-                self.assertEqual(
-                    links[len(NAV_ORDER):], MGMT_ORDER,
-                    f"{path} 管理菜单组顺序/名称不符合固定顺序")
+                    links, EXPECTED_LINKS,
+                    f"{path} 导航顺序/名称不符合固定顺序")
                 self.assertIn(
                     '<button type="button" class="nav-group" '
                     'data-nav-group="user-mgmt"',
                     nav.group(1), f"{path} 缺少用户管理组标题")
                 self.assertIn(
-                    ">管理用户</button>", nav.group(1),
-                    f"{path} 组标题文案应为「管理用户」")
+                    ">用户管理</button>", nav.group(1),
+                    f"{path} 组标题文案应为「用户管理」")
 
     def test_04_active_highlight_on_every_page(self):
         """每个页面的导航中自身菜单项有 active 高亮，且仅一项"""
@@ -121,14 +120,14 @@ class TestPageRoutes(unittest.TestCase):
                                  f"{path} active 高亮数量应为 1")
                 self.assertIn("nav-group-current", body,
                               f"{path} 组标题缺少 nav-group-current 当前态")
-                self.assertIn(">管理用户</button>", body,
-                              f"{path} 组标题文案应为「管理用户」")
+                self.assertIn(">用户管理</button>", body,
+                              f"{path} 组标题文案应为「用户管理」")
 
     def test_05_legacy_static_paths_still_work(self):
         """旧 /static/xxx.html 路径保持兼容（历史书签可用）"""
         for path, feature in [
             ("/static/dashboard.html", "经营总览"),
-            ("/static/index.html", "Excel 数据导入"),
+            ("/static/index.html", "数据导入"),
             ("/static/reconciliation.html", "对账成本"),
             ("/static/profit.html", "利润核算"),
         ]:
@@ -152,10 +151,12 @@ class TestPageRoutes(unittest.TestCase):
                 self.assertNotIn('href="/"', nav)
 
     def test_08_member_nav_excludes_admin_group(self):
-        """member 视角导航经服务端剔除: 恰 10 业务项, 无管理菜单组结构"""
+        """member 视角导航经服务端剔除: 仅业务项, 无管理菜单组结构,
+        且不含异常处理/操作日志（仅 admin 可见）"""
         member = self.env.create_user_client(
             "route_member", "Member123456", store_name="路由测试店铺")
-        for path, _ in NAV_ORDER:
+        member_nav = NAV_ORDER[:8]
+        for path, _ in member_nav:
             with self.subTest(path=path):
                 status, body, _ = member.get_page(path)
                 self.assertEqual(status, 200)
@@ -163,15 +164,25 @@ class TestPageRoutes(unittest.TestCase):
                 links = re.findall(
                     r'<a href="([^"]+)"(?: class="active")?>([^<]+)</a>',
                     nav)
-                self.assertEqual(links, NAV_ORDER,
-                                 f"{path} member 视角应恰 10 个业务菜单")
+                self.assertEqual(links, member_nav,
+                                 f"{path} member 视角应与业务菜单一致")
                 self.assertNotIn("admin-nav-start", body)
+                self.assertNotIn("admin-only-nav-start", body)
                 self.assertNotIn("nav-group", nav)
                 self.assertNotIn("<button", nav)
-                self.assertNotIn("管理用户", nav)
+                self.assertNotIn("用户管理", nav)
                 self.assertNotIn('href="/users/create"', nav)
                 self.assertNotIn('href="/stores"', nav)
                 self.assertNotIn('href="/users"', nav)
+                self.assertNotIn('href="/anomalies"', nav)
+                self.assertNotIn('href="/logs"', nav)
+                self.assertNotIn("异常处理", nav)
+                self.assertNotIn("操作日志", nav)
+        for path in ("/anomalies", "/logs"):
+            with self.subTest(path=path):
+                status, _, _ = member.get_page(path)
+                self.assertNotEqual(status, 200,
+                                    f"{path} member 应被拒绝访问")
 
 
 if __name__ == "__main__":

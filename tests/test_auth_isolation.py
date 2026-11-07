@@ -126,7 +126,6 @@ class TestABIsolation(unittest.TestCase):
         cases = [
             "/api/orders?page=1&size=100",
             "/api/refund-orders?page=1&size=100",
-            "/api/refund-details?page=1&size=100",
             "/api/supplier-costs?page=1&size=100",
             "/api/anomalies?page=1&size=100",
             "/api/reconciliation?page=1&size=100",
@@ -156,7 +155,6 @@ class TestABIsolation(unittest.TestCase):
         cases = [
             "/api/orders?page=1&size=100",
             "/api/refund-orders?page=1&size=100",
-            "/api/refund-details?page=1&size=100",
             "/api/supplier-costs?page=1&size=100",
             "/api/anomalies?page=1&size=100",
             "/api/reconciliation?page=1&size=100",
@@ -289,10 +287,6 @@ class TestABIsolation(unittest.TestCase):
         self.assertIn("不存在", r["message"])
         # B 的成本/退款明细按关键词检索均无结果（不泄露存在性）
         st, r = self.a.get(f"/api/supplier-costs?keyword={B_PREFIX}0001"
-                           "&page=1&size=100")
-        self.assertEqual(st, 200)
-        self.assertEqual(r["data"]["total"], 0)
-        st, r = self.a.get(f"/api/refund-details?order_id={B_PREFIX}0040"
                            "&page=1&size=100")
         self.assertEqual(st, 200)
         self.assertEqual(r["data"]["total"], 0)

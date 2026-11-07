@@ -193,6 +193,19 @@ tbody tr:hover { background: #f9fafb; }
 .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 800px) { .upload-grid { grid-template-columns: 1fr; } }
 
+/* 文件信息展示区（数据导入页已选文件条） */
+.file-info-bar {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  margin: 12px 0 0; padding: 12px 14px;
+}
+.file-info-bar .fi-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.file-info-bar .fi-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.file-info-bar .fi-actions { display: flex; gap: 8px; }
+.file-info-bar--inline { margin: 0 0 12px; padding: 8px 14px; font-size: 13px; }
+
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag { background: #f3f4f6; border-radius: 6px; padding: 3px 8px; font-size: 12px; color: var(--text-light); }
 .tag.ok { background: #f0fdf4; color: var(--success); }
@@ -273,6 +286,19 @@ tbody tr:hover { background: #f9fafb; }
 }
 .ss-select:hover, .ss-select:focus { border-color: var(--primary); outline: none; }
 .ss-count { font-size: 12px; color: var(--text-light); }
+
+/* 列表筛选区：月份+店铺筛选紧凑合并到表格卡片内（去掉独立卡片边框） */
+.list-filters {
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.list-filters .month-filter,
+.list-filters .store-scope {
+  background: none; border: none; border-radius: 0; padding: 0; margin: 0;
+}
+.list-filters .month-filter .mf-label-row { margin-top: 6px; padding-top: 6px; }
+.list-filters .store-scope.multi { padding-top: 8px; border-top: 1px dashed var(--border); }
+.list-filters .store-scope.single { padding: 0; }
 
 /* ---------- 账号区（渲染于 nav 标签之外, 不影响 10 个业务菜单断言） ---------- */
 .navbar .auth-area, .topbar .auth-area {
@@ -741,4 +767,125 @@ tbody tr:hover td.col-op { background: #f9fafb; }
   .card-head { flex-wrap: wrap; }
   .card-head .head-actions { width: 100%; justify-content: flex-end; }
   .ss-select { min-width: 0; max-width: 100%; }
+}
+
+/* ==================== 登录/注册页现代化样式（2026-11-02） ====================
+   左右分栏: 左侧渐变品牌展示区 + 右侧表单卡片; 窄屏(≤880px)自动切单列仅显示表单。
+   沿用墨绿主题(方案B), 输入框 focus 主色光晕, 主按钮 hover 阴影微抬。 */
+.auth-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+/* 左侧品牌展示区 */
+.auth-banner {
+  flex: 1 1 55%;
+  align-self: stretch;
+  position: relative;
+  background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 55%, #14b8a6 100%);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 48px;
+  overflow: hidden;
+}
+.auth-banner-inner { position: relative; z-index: 2; max-width: 420px; }
+.auth-banner .auth-logo {
+  width: 56px; height: 56px; border-radius: 14px;
+  background: rgba(255, 255, 255, .18);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 26px; font-weight: 700; margin-bottom: 28px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+}
+.auth-banner .auth-title { font-size: 26px; font-weight: 700; line-height: 1.4; margin-bottom: 12px; }
+.auth-banner .auth-slogan { font-size: 15px; opacity: .88; margin-bottom: 36px; line-height: 1.6; }
+.auth-banner .auth-features { list-style: none; padding: 0; margin: 0; }
+.auth-banner .auth-features li {
+  position: relative; padding: 9px 0 9px 30px; font-size: 14px; opacity: .92; line-height: 1.5;
+}
+.auth-banner .auth-features li::before {
+  content: ""; position: absolute; left: 0; top: 12px; width: 18px; height: 18px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+/* 装饰圆环 */
+.auth-banner-deco {
+  position: absolute; pointer-events: none; z-index: 1;
+  border-radius: 50%; background: rgba(255, 255, 255, .06);
+}
+.auth-banner-deco.d1 { width: 320px; height: 320px; top: -120px; right: -100px; }
+.auth-banner-deco.d2 { width: 220px; height: 220px; bottom: -80px; left: -70px; background: rgba(255, 255, 255, .05); }
+.auth-banner-deco.d3 { width: 120px; height: 120px; bottom: 120px; right: 60px; background: rgba(255, 255, 255, .08); }
+/* 右侧表单区 */
+.auth-main {
+  flex: 1 1 45%;
+  align-self: stretch;
+  display: flex; align-items: center; justify-content: center;
+  padding: 32px 24px;
+}
+.auth-card {
+  width: 100%; max-width: 380px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px 36px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, .08);
+}
+.auth-card.wide { max-width: 460px; }
+.auth-card .brand {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 17px; font-weight: 700; margin-bottom: 6px; color: var(--text);
+}
+.auth-card .brand .logo {
+  width: 34px; height: 34px; border-radius: 9px;
+  background: var(--primary); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 700; flex-shrink: 0;
+}
+.auth-card .sub { color: var(--text-light); font-size: 13px; margin-bottom: 28px; }
+.auth-form { display: flex; flex-direction: column; gap: 18px; }
+.auth-form > div { display: flex; flex-direction: column; gap: 6px; }
+.auth-form label { font-size: 13px; font-weight: 500; color: var(--text); }
+.auth-form input {
+  height: 46px; padding: 0 14px;
+  border: 1px solid var(--border); border-radius: 10px;
+  font-size: 14px; background: #fff; color: var(--text);
+  transition: border-color .15s, box-shadow .15s;
+  width: 100%;
+}
+.auth-form input::placeholder { color: #9ca3af; }
+.auth-form input:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, .12);
+}
+.auth-btn {
+  height: 46px; border: none; border-radius: 10px;
+  background: var(--primary); color: #fff;
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  transition: background .15s, box-shadow .15s, transform .05s;
+  margin-top: 6px; letter-spacing: 2px;
+}
+.auth-btn:hover { background: var(--primary-dark); box-shadow: 0 6px 16px rgba(15, 118, 110, .25); }
+.auth-btn:active { transform: translateY(1px); }
+.auth-btn:disabled { opacity: .7; cursor: not-allowed; box-shadow: none; }
+.auth-error {
+  display: none; background: #fef2f2; color: var(--danger);
+  border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5;
+}
+.auth-alt { text-align: center; margin-top: 22px; font-size: 13px; color: var(--text-light); }
+.auth-alt a { font-weight: 500; }
+.auth-alt a:hover { text-decoration: underline; }
+.auth-ok {
+  display: none; background: #f0fdf4; border: 1px solid var(--success);
+  color: var(--success); border-radius: 10px; padding: 16px; font-size: 14px; line-height: 1.8;
+}
+.auth-ok a { font-weight: 600; }
+.auth-ok a:hover { text-decoration: underline; }
+/* 窄屏: 隐藏左侧品牌区, 表单区全宽居中 */
+@media (max-width: 880px) {
+  .auth-banner { display: none; }
+  .auth-main { flex: 1 1 100%; padding: 24px 16px; }
+  .auth-card { max-width: 420px; padding: 32px 24px; }
 }

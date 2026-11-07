@@ -2,10 +2,10 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>对账成本 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
 <style>
-  .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .risk-yes { color: #d97706; font-weight: 600; }
   .blocked { color: #dc2626; font-weight: 600; }
   .candidate-list { max-height: 260px; overflow: auto; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; }
@@ -15,39 +15,7 @@
 </style>
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard">经营总览</a>
-    <a href="/data-import">数据导入</a>
-    <a href="/orders">普通订单</a>
-    <a href="/refund-orders">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation" class="active">对账成本</a>
-    <a href="/profit">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create">创建用户</a>
-      <a href="/stores">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
+<!--@app-shell-->
   <div class="page-title">对账成本</div>
   <div class="page-desc">按「主订单编号精确 → 订单编号精确 → 标准化相等 → 辅助候选（待人工确认）」优先级匹配；一个订单可关联多条供应商明细；总金额多行重复时自动识别重复风险并去重，粒度未经人工确认前不用于最终利润计算。月份筛选按订单下单时间归属（左闭右开区间）。</div>
 
@@ -77,6 +45,7 @@
       <div class="head-actions">
         <span class="hint" id="last-recon"></span>
         <span class="hint" id="table-hint"></span>
+        <button class="btn secondary" id="btn-batch-cost" type="button" disabled>批量修改成本</button>
         <button class="btn" id="btn-run">执行对账</button>
         <button class="btn secondary" id="btn-export">导出当前筛选</button>
       </div>
@@ -84,6 +53,7 @@
     <div class="table-wrap">
       <table id="recon-table">
         <thead><tr>
+          <th class="oc-pick"><input type="checkbox" id="oc-check-all" aria-label="选择本页可改成本的订单"></th>
           <th>订单号</th><th>时间</th><th>匹配状态</th><th>匹配方式</th>
           <th class="num">明细数</th><th class="num">微信实收</th><th class="num">供货实收</th>
           <th class="num">金额差异</th><th class="num">数量差</th>
@@ -98,11 +68,11 @@
   </div>
 </div>
 
-<!-- 对账详情模态 -->
-<div class="modal-mask" id="detail-modal">
-  <div class="modal" style="max-width:900px">
-    <div class="modal-head"><h3 id="detail-title">对账详情</h3><button class="modal-close" onclick="closeDetail()">×</button></div>
-    <div class="modal-body" id="detail-body"></div>
+<!-- 人工修改模态 -->
+<div class="modal-mask" id="modify-modal">
+  <div class="modal" style="max-width:680px">
+    <div class="modal-head"><h3>人工修改异常订单</h3><button class="modal-close" onclick="closeModify()">×</button></div>
+    <div class="modal-body" id="modify-body"></div>
   </div>
 </div>
 
@@ -115,6 +85,8 @@
 <script src="/static/store_scope.js"></script>
 <script>
 const STATE = { page: 1, size: 50, options: null };
+let currentRows = [];
+const selectedOrders = new Map();
 
 const MF = new MonthFilter({
   container: "month-filter",
@@ -139,7 +111,7 @@ const METHOD_LABELS = {
 };
 const GRAN_LABELS = {
   order_level: "订单级", package_level: "物流单级", supplier_line: "商品行级",
-  mixed: "混合", unknown: "未知",
+  mixed: "混合", unknown: "未知", manual: "手工（货品+快递）",
 };
 
 function matchBadge(s) {
@@ -154,6 +126,9 @@ function riskCell(r) {
   return parts.length ? parts.join("<br>") : "—";
 }
 function usableCell(r) {
+  const manual = r.manual_cost && r.manual_cost.total_amount != null
+    && !(r.supplier_record_ids || []).length;
+  if (manual) return '<span class="badge green">是</span>';
   if (!r.supplier_record_ids || !r.supplier_record_ids.length) return "—";
   return r.cost && r.cost.usable_for_profit
     ? '<span class="badge green">是</span>'
@@ -181,11 +156,13 @@ async function load() {
     const data = await API.get(`/api/reconciliation?${queryStr()}`);
     renderStats(data.statistics);
     state.innerHTML = "";
-    if (!data.results.length) {
+    currentRows = data.results || [];
+    if (!currentRows.length) {
       state.innerHTML = `<div class="empty-state"><div class="icon">🔗</div>暂无对账结果<br><span style="font-size:12px">请先在「数据导入」页导入微信订单与供应商成本 Excel，再点击「执行对账」</span></div>`;
     } else {
-      tbody.innerHTML = data.results.map(r => `<tr>
-        <td>${esc(r.order_id || `(供货) ${r.supplier_order_key || ""}`)}</td>
+      tbody.innerHTML = currentRows.map((r, i) => `<tr>
+        <td class="oc-pick">${shouldShowOrderCost(r) ? `<input type="checkbox" class="oc-check" data-i="${i}" aria-label="选择订单 ${esc(r.order_id)}"${selectedOrders.has(orderKey(r)) ? " checked" : ""}>` : ""}</td>
+        <td class="oc-order" title="${esc(r.order_id || r.supplier_order_key || "")}"><span class="oc-order-text">${esc(r.order_id || `(供货) ${r.supplier_order_key || ""}`)}</span></td>
         <td>${fmtTime(r.order_time)}</td>
         <td>${matchBadge(r.match_status)}</td>
         <td style="font-size:12px">${r.match_method ? METHOD_LABELS[r.match_method] || esc(r.match_method) : "—"}</td>
@@ -202,10 +179,11 @@ async function load() {
         <td>${usableCell(r)}</td>
         <td style="font-size:12px">${(r.exception_codes || []).length
           ? `<span class="badge red">${r.exception_codes.length} 项</span>` : "—"}</td>
-        <td class="col-op"><button class="link-btn" onclick='showDetail(${JSON.stringify(JSON.stringify(r))})'>详情</button></td>
+        <td class="col-op"><button class="link-btn" onclick="showDetail(${i})">详情</button>${shouldShowOrderCost(r) ? `<button class="link-btn" onclick="openOrderCost(${i})">修改成本</button>` : ""}${shouldShowModify(r) ? `<button class="link-btn" onclick="openModify(${i})">修改</button>` : ""}${shouldShowManualCost(r) ? `<button class="link-btn" onclick="openManualCost(${i})">录入成本</button>` : ""}</td>
       </tr>`).join("");
     }
     document.getElementById("table-hint").textContent = data.total ? `第 ${data.page}/${data.pages} 页` : "";
+    syncBatchCostButton();
     renderPager(document.getElementById("pager"), data, {
       onPage: p => { STATE.page = p; load(); },
       onSize: s => { STATE.size = s; STATE.page = 1; load(); },
@@ -252,18 +230,13 @@ async function doRunReconcile() {
   }
 }
 
-function closeDetail() { document.getElementById("detail-modal").classList.remove("show"); }
-
-function showDetail(jsonStr) {
-  const r = JSON.parse(jsonStr);
-  document.getElementById("detail-title").textContent =
-    `对账详情：${r.order_id || `(供货) ${r.supplier_order_key || ""}`}`;
-  document.getElementById("detail-modal").classList.add("show");
+function showDetail(i) {
+  const r = currentRows[i];
+  if (!r) return;
   renderDetail(r);
 }
 
 function renderDetail(r) {
-  const body = document.getElementById("detail-body");
   const c = r.cost || {}, k = r.checks || {};
   const mr = r.manual_review || {};
   const anomalies = (r.exception_codes || []).map(t =>
@@ -271,7 +244,7 @@ function renderDetail(r) {
 
   const costLines = (c.lines || []).map((ln, i) => `<tr>
     <td>${i + 1}</td>
-    <td>${GRAN_LABELS[ln.granularity] || ln.granularity}</td>
+    <td>${esc(GRAN_LABELS[ln.granularity] || ln.granularity || "—")}</td>
     <td class="num">${fmtMoneyYuan(ln.total_amount)}</td>
     <td style="font-size:12px">${esc((ln.record_ids || []).join(", "))}</td>
     <td style="font-size:12px;color:#d97706">${(ln.duplicated_record_ids || []).length
@@ -291,7 +264,7 @@ function renderDetail(r) {
     </td>
   </tr>`).join("");
 
-  body.innerHTML = `
+  const html = `
     <div class="detail-section"><h4>匹配信息</h4>
       <div class="kv-grid">
         ${[
@@ -319,8 +292,12 @@ function renderDetail(r) {
           ["去重扣除", fmtMoneyYuan(c.dedup_amount)],
           ["重复风险", c.duplicate_total_amount_risk ? "是（禁止直接重复累加）" : "否"],
           ["粒度待确认", c.order_level_dedup_pending ? "是" : "否"],
-          ["可用于利润计算", r.supplier_record_ids && r.supplier_record_ids.length
-            ? (c.usable_for_profit ? "是" : "否（粒度未确认或成本缺失）") : "—"],
+          ["可用于利润计算", (r.manual_cost && !(r.supplier_record_ids || []).length)
+            ? "是（手工：货品+快递）"
+            : (r.supplier_record_ids && r.supplier_record_ids.length
+            ? (c.usable_for_profit ? "是" : "否（粒度未确认或成本缺失）") : "—")],
+          ["货品成本", r.manual_cost ? fmtMoneyYuan(r.manual_cost.product_amount) : "—"],
+          ["快递费", r.manual_cost ? fmtMoneyYuan(r.manual_cost.courier_amount) : "—"],
         ].map(([kk, vv]) => `<div class="kv"><div class="k">${kk}</div><div class="v">${esc(vv)}</div></div>`).join("")}
       </div>
       ${costLines ? `<div class="table-wrap"><table>
@@ -328,6 +305,17 @@ function renderDetail(r) {
         <tbody>${costLines}</tbody></table></div>` : ""}
     </div>
     <div class="detail-section"><h4>异常标记</h4><div>${anomalies}</div></div>
+    <div class="detail-section"><h4>数据来源标记</h4>
+      <div class="kv-grid">
+        <div class="kv"><div class="k">人工修改字段</div><div class="v">${(r.manual_modified_fields || []).length ? r.manual_modified_fields.map(esc).join("、") : "无"}</div></div>
+        <div class="kv"><div class="k">最后修改人</div><div class="v">${esc(r.last_modified_by || "—")}</div></div>
+        <div class="kv"><div class="k">最后修改时间</div><div class="v">${fmtTime(r.last_modified_at)}</div></div>
+        <div class="kv"><div class="k">最后导入批次</div><div class="v">${esc(r.last_import_batch_id || "—")}</div></div>
+      </div>
+      ${(r.data_source && Object.keys(r.data_source).length) ? `<div class="table-wrap"><table>
+        <thead><tr><th>字段</th><th>来源</th></tr></thead>
+        <tbody>${Object.entries(r.data_source).map(([f, s]) => `<tr><td>${esc(f)}</td><td>${s === "import" ? "导入" : s === "manual" ? "人工" : s === "computed" ? "计算" : esc(s)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    </div>
     <div class="detail-section"><h4>人工匹配</h4>
       <div id="manual-panel"></div>
     </div>
@@ -337,6 +325,14 @@ function renderDetail(r) {
         <tbody>${history}</tbody></table></div>`
         : `<div class="history-note">暂无人工操作记录</div>`}
     </div>`;
+  const title = `对账详情：${r.order_id || `(供货) ${r.supplier_order_key || ""}`}`;
+  const opened = document.getElementById("um-modal");
+  const openedBody = opened ? opened.querySelector(".um-body") : null;
+  if (openedBody) {
+    openedBody.innerHTML = html;
+  } else {
+    openDrawer({ title: title, width: 900, bodyHtml: html });
+  }
   renderManualPanel(r);
 }
 
@@ -426,7 +422,413 @@ async function loadOptions() {
   } catch (e) { /* 忽略 */ }
 }
 
+function shouldShowModify(r) {
+  return r.order_id && r.match_status &&
+    (r.match_status === "unmatched_order" || r.match_status === "suspected") &&
+    (r.exception_codes || []).length > 0;
+}
+
+function shouldShowManualCost(r) {
+  return r.match_status === "unmatched_supplier"
+    && (r.supplier_record_ids || []).length > 0;
+}
+
+function shouldShowOrderCost(r) {
+  return !!(r.order_id && r.match_status === "unmatched_order"
+    && !(r.supplier_record_ids || []).length);
+}
+
+function orderKey(r) {
+  return encodeURIComponent(r.store_id || "") + "|" + encodeURIComponent(r.order_id);
+}
+
+function rememberOrder(r) {
+  const mc = r.manual_cost || {};
+  selectedOrders.set(orderKey(r), {
+    order_id: r.order_id,
+    store_id: r.store_id || "",
+    product_amount: mc.product_amount || "",
+    courier_amount: mc.courier_amount || "",
+  });
+}
+
+function syncBatchCostButton() {
+  const btn = document.getElementById("btn-batch-cost");
+  const n = selectedOrders.size;
+  if (!btn) return;
+  btn.disabled = n === 0;
+  btn.textContent = n ? `批量修改成本（${n}）` : "批量修改成本";
+  const all = document.getElementById("oc-check-all");
+  if (!all) return;
+  const boxes = Array.from(document.querySelectorAll(".oc-check"));
+  const checked = boxes.filter(cb => cb.checked).length;
+  all.checked = boxes.length > 0 && checked === boxes.length;
+  all.indeterminate = checked > 0 && checked < boxes.length;
+  all.disabled = boxes.length === 0;
+}
+
+function moneyOk(text) {
+  return /^\d+(\.\d{1,2})?$/.test(text);
+}
+
+function openOrderCost(i) {
+  const r = currentRows[i];
+  if (!r || !shouldShowOrderCost(r)) return;
+  const mc = r.manual_cost || {};
+  openModal({
+    title: "修改未匹配订单成本",
+    width: 460,
+    bodyHtml: `
+      <div class="detail-section">
+        <div class="kv-grid">
+          <div class="kv"><div class="k">订单号</div><div class="v">${esc(r.order_id)}</div></div>
+          <div class="kv"><div class="k">当前匹配状态</div><div class="v">${matchBadge(r.match_status)}</div></div>
+        </div>
+        <p class="page-desc" style="margin:10px 0 0">总成本 = 货品 + 快递。不必先绑定店铺或供应商记录。之后一旦有供应商成本入库并匹配到本订单，以入库金额为准，覆盖这里的手工金额。</p>
+      </div>
+      <div class="filter-grid">
+        <div class="filter-item">
+          <label>货品成本（非负，最多两位小数）</label>
+          <input id="oc-product" type="text" inputmode="decimal" autocomplete="off" value="${esc(mc.product_amount || "")}" placeholder="例如：80.00">
+        </div>
+        <div class="filter-item">
+          <label>快递费（非负，最多两位小数）</label>
+          <input id="oc-courier" type="text" inputmode="decimal" autocomplete="off" value="${esc(mc.courier_amount || "")}" placeholder="例如：8.00">
+        </div>
+      </div>
+      <div class="kv" style="margin-top:10px"><div class="k">总成本</div><div class="v" id="oc-total">${mc.total_amount ? esc(mc.total_amount) : "—"}</div></div>
+      <span class="field-err" id="oc-err" style="display:none"></span>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "保存", kind: "primary", onClick: async () => {
+          const productEl = document.getElementById("oc-product");
+          const courierEl = document.getElementById("oc-courier");
+          const errEl = document.getElementById("oc-err");
+          const product = productEl.value.trim();
+          const courier = courierEl.value.trim();
+          errEl.style.display = "none";
+          const bad = (el, msg) => {
+            errEl.textContent = msg;
+            errEl.style.display = "block";
+            el.focus();
+            return false;
+          };
+          const okMoney = (text) => /^\d+(\.\d{1,2})?$/.test(text);
+          if (!product) return bad(productEl, "货品成本不能为空");
+          if (!okMoney(product)) return bad(productEl, "货品成本须为非负金额，最多两位小数");
+          if (!courier) return bad(courierEl, "快递费不能为空");
+          if (!okMoney(courier)) return bad(courierEl, "快递费须为非负金额，最多两位小数");
+          const payload = {
+            order_id: r.order_id,
+            product_amount: product,
+            courier_amount: courier,
+          };
+          if (r.store_id) payload.target_store_id = r.store_id;
+          try {
+            await API.post("/api/reconciliation/manual-order-cost", payload);
+            toast("总成本已保存", "success");
+            load();
+          } catch (e) {
+            toast(e.message || "保存失败", "error", 5000);
+            return false;
+          }
+        } },
+    ],
+  });
+  const refreshTotal = () => {
+    const el = document.getElementById("oc-total");
+    if (!el) return;
+    const p = document.getElementById("oc-product").value.trim();
+    const c = document.getElementById("oc-courier").value.trim();
+    if (!/^\d+(\.\d{1,2})?$/.test(p) || !/^\d+(\.\d{1,2})?$/.test(c)) {
+      el.textContent = "—";
+      return;
+    }
+    el.textContent = (Number(p) + Number(c)).toFixed(2);
+  };
+  ["oc-product", "oc-courier"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", refreshTotal);
+  });
+  const first = document.getElementById("oc-product");
+  if (first) first.focus();
+}
+
+function refreshBatchTotals() {
+  document.querySelectorAll("[data-oc-row]").forEach(row => {
+    const i = row.getAttribute("data-oc-row");
+    const p = row.querySelector("[data-oc-product]").value.trim();
+    const c = row.querySelector("[data-oc-courier]").value.trim();
+    const sum = document.getElementById("oc-sum-" + i);
+    if (!sum) return;
+    sum.textContent = moneyOk(p) && moneyOk(c) ? (Number(p) + Number(c)).toFixed(2) : "—";
+  });
+}
+
+function openBatchCost() {
+  const rows = Array.from(selectedOrders.values());
+  if (!rows.length) {
+    toast("请先勾选未匹配订单", "error");
+    return;
+  }
+  const bodyRows = rows.map((r, i) => `<div class="oc-batch-row" data-oc-row="${i}">
+    <div class="oc-batch-id" title="${esc(r.order_id)}">${esc(r.order_id)}</div>
+    <input data-oc-product type="text" inputmode="decimal" autocomplete="off" value="${esc(r.product_amount)}" placeholder="货品" aria-label="货品成本 ${esc(r.order_id)}">
+    <input data-oc-courier type="text" inputmode="decimal" autocomplete="off" value="${esc(r.courier_amount)}" placeholder="快递" aria-label="快递费 ${esc(r.order_id)}">
+    <div class="num" id="oc-sum-${i}">—</div>
+  </div>`).join("");
+  openModal({
+    title: `批量修改成本（${rows.length}）`,
+    width: 720,
+    bodyHtml: `
+      <p class="page-desc" style="margin:0 0 10px">总成本 = 货品 + 快递。可逐单填写，或在下方填一组金额后应用到全部已选订单。不必先绑定店铺。之后入库并匹配的供应商成本会覆盖对应订单的手工金额。</p>
+      <div class="filter-grid" style="margin-bottom:12px">
+        <div class="filter-item"><label>统一货品成本</label><input id="oc-fill-product" type="text" inputmode="decimal" autocomplete="off" placeholder="应用到全部"></div>
+        <div class="filter-item"><label>统一快递费</label><input id="oc-fill-courier" type="text" inputmode="decimal" autocomplete="off" placeholder="应用到全部"></div>
+        <div class="filter-actions"><button class="btn secondary" id="oc-fill" type="button">填入全部</button></div>
+      </div>
+      <div class="oc-batch-list">
+        <div class="oc-batch-head"><span>订单号</span><span>货品成本</span><span>快递费</span><span>总成本</span></div>
+        ${bodyRows}
+      </div>
+      <span class="field-err" id="oc-batch-err" style="display:none"></span>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "保存全部", kind: "primary", onClick: async () => {
+          const errEl = document.getElementById("oc-batch-err");
+          errEl.style.display = "none";
+          const items = [];
+          const lineRows = Array.from(document.querySelectorAll("[data-oc-row]"));
+          for (const row of lineRows) {
+            const i = Number(row.getAttribute("data-oc-row"));
+            const src = rows[i];
+            const productEl = row.querySelector("[data-oc-product]");
+            const courierEl = row.querySelector("[data-oc-courier]");
+            const product = productEl.value.trim();
+            const courier = courierEl.value.trim();
+            if (!product || !moneyOk(product)) {
+              errEl.textContent = `订单 ${src.order_id} 的货品成本须为非负金额，最多两位小数`;
+              errEl.style.display = "block";
+              productEl.focus();
+              return false;
+            }
+            if (!courier || !moneyOk(courier)) {
+              errEl.textContent = `订单 ${src.order_id} 的快递费须为非负金额，最多两位小数`;
+              errEl.style.display = "block";
+              courierEl.focus();
+              return false;
+            }
+            const item = {
+              order_id: src.order_id,
+              product_amount: product,
+              courier_amount: courier,
+            };
+            if (src.store_id) item.target_store_id = src.store_id;
+            items.push(item);
+          }
+          try {
+            const data = await API.post("/api/reconciliation/manual-order-cost", { items });
+            selectedOrders.clear();
+            syncBatchCostButton();
+            toast(data && data.count ? `已保存 ${data.count} 条总成本` : "总成本已保存", "success");
+            load();
+          } catch (e) {
+            toast(e.message || "保存失败", "error", 5000);
+            return false;
+          }
+        } },
+    ],
+  });
+  document.getElementById("oc-fill").addEventListener("click", () => {
+    const product = document.getElementById("oc-fill-product").value.trim();
+    const courier = document.getElementById("oc-fill-courier").value.trim();
+    const errEl = document.getElementById("oc-batch-err");
+    if (!moneyOk(product) || !moneyOk(courier)) {
+      errEl.textContent = "统一金额须为非负金额，最多两位小数";
+      errEl.style.display = "block";
+      return;
+    }
+    errEl.style.display = "none";
+    document.querySelectorAll("[data-oc-product]").forEach(el => { el.value = product; });
+    document.querySelectorAll("[data-oc-courier]").forEach(el => { el.value = courier; });
+    refreshBatchTotals();
+  });
+  document.querySelectorAll("[data-oc-product], [data-oc-courier]").forEach(el => {
+    el.addEventListener("input", refreshBatchTotals);
+  });
+  refreshBatchTotals();
+}
+
+function openManualCost(i) {
+  const r = currentRows[i];
+  if (!r) return;
+  const sid = (r.supplier_record_ids || [])[0];
+  if (!sid) { toast("未找到供应商成本记录 ID", "error"); return; }
+  const currentCost = (r.cost && r.cost.total_amount) != null
+    ? fmtMoney(r.cost.total_amount) : "—";
+  openModal({
+    title: "录入综合成本",
+    width: 460,
+    bodyHtml: `
+      <div class="detail-section">
+        <div class="kv-grid">
+          <div class="kv"><div class="k">供应商记录 ID</div><div class="v" style="font-family:monospace;font-size:12px">${esc(sid)}</div></div>
+          <div class="kv"><div class="k">供应商订单编号</div><div class="v">${esc(r.supplier_order_key || "—")}</div></div>
+          <div class="kv"><div class="k">当前匹配状态</div><div class="v">${matchBadge(r.match_status)}</div></div>
+          <div class="kv"><div class="k">当前综合成本</div><div class="v">${currentCost}</div></div>
+        </div>
+      </div>
+      <div class="filter-item">
+        <label>新综合成本（非负金额，最多两位小数）</label>
+        <input id="mc-cost" type="text" placeholder="例如：128.50" autocomplete="off">
+        <span class="field-err" id="mc-err" style="display:none"></span>
+      </div>
+      <div class="filter-item">
+        <label>修改原因（可选）</label>
+        <input id="mc-reason" placeholder="例如：核对原始单据后修正金额" autocomplete="off">
+      </div>`,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      { text: "保存", kind: "primary", onClick: async () => {
+          const inp = document.getElementById("mc-cost");
+          const val = inp.value.trim();
+          const errEl = document.getElementById("mc-err");
+          errEl.style.display = "none";
+          if (!val) {
+            errEl.textContent = "综合成本不能为空";
+            errEl.style.display = "block";
+            inp.focus();
+            return false;
+          }
+          if (parseFloat(val) < 0 || isNaN(parseFloat(val))) {
+            errEl.textContent = "综合成本不能为负数或非法字符";
+            errEl.style.display = "block";
+            inp.focus();
+            return false;
+          }
+          try {
+            await API.post("/api/reconciliation/manual-cost", {
+              supplier_record_id: sid,
+              total_amount: val,
+              reason: document.getElementById("mc-reason").value.trim() || undefined,
+            });
+            toast("综合成本已保存", "success");
+            load();
+          } catch (e) {
+            toast(e.message || "保存失败", "error", 5000);
+            return false;
+          }
+        } },
+    ],
+  });
+  const inp = document.getElementById("mc-cost");
+  if (inp) inp.focus();
+}
+
+function closeModify() { document.getElementById("modify-modal").classList.remove("show"); }
+
+async function openModify(i) {
+  const r = currentRows[i];
+  if (!r || !r.order_id) return;
+  const orderId = r.order_id;
+  const body = document.getElementById("modify-body");
+  body.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  document.getElementById("modify-modal").classList.add("show");
+  try {
+    const info = await API.get(`/api/reconciliation/modifiable-fields?order_id=${encodeURIComponent(orderId)}`);
+    if (!info.modifiable) {
+      body.innerHTML = `<div class="error-state"><div class="msg">该订单已匹配导入数据，不能手动修改。</div></div>`;
+      return;
+    }
+    const orderFields = (info.order_fields || []).map(f => `
+      <div class="filter-item">
+        <label>${esc(f.label)}（${esc(f.field)}）</label>
+        <input data-field="${esc(f.field)}" data-type="${esc(f.type)}" value="${esc(f.current_value ?? "")}" placeholder="${esc(f.label)}">
+      </div>`).join("");
+    const costFields = (info.cost_fields || []).map(f => `
+      <div class="filter-item">
+        <label>${esc(f.label)}（${esc(f.field)}）</label>
+        <input data-field="${esc(f.field)}" data-type="${esc(f.type)}" data-supplier-record-id="${esc(f.supplier_record_id)}" value="${esc(f.current_value ?? "")}" placeholder="${esc(f.label)}">
+      </div>`).join("");
+    body.innerHTML = `
+      <div class="detail-section"><h4>订单信息</h4>
+        <div class="kv-grid">
+          <div class="kv"><div class="k">订单号</div><div class="v">${esc(info.order_id)}</div></div>
+          <div class="kv"><div class="k">匹配状态</div><div class="v">${matchBadge(info.match_status)}</div></div>
+        </div>
+      </div>
+      ${orderFields ? `<div class="detail-section"><h4>可修改订单字段</h4><div class="filter-grid">${orderFields}</div></div>` : ""}
+      ${costFields ? `<div class="detail-section"><h4>可修改成本字段</h4><div class="filter-grid">${costFields}</div></div>` : ""}
+      <div class="detail-section"><h4>修改原因</h4>
+        <div class="filter-item"><label>请输入修改原因（必填，记录审计）</label>
+          <input id="modify-reason" placeholder="例如：核对原始单据后修正金额"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn secondary" onclick="closeModify()">取消</button>
+        <button class="btn" onclick="submitModify('${esc(orderId)}')">保存修改</button>
+      </div>`;
+  } catch (e) {
+    body.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败")}</div></div>`;
+  }
+}
+
+function convertValueByType(raw, type) {
+  if (type === "positive_int") {
+    const n = parseInt(raw, 10);
+    return isNaN(n) ? raw : n;
+  }
+  return raw;
+}
+
+async function submitModify(orderId) {
+  const fields = {};
+  const costUpdates = [];
+  document.querySelectorAll("#modify-body input[data-field]").forEach(inp => {
+    const field = inp.dataset.field;
+    const type = inp.dataset.type;
+    const sid = inp.dataset.supplierRecordId;
+    const raw = inp.value.trim();
+    const value = convertValueByType(raw, type);
+    if (sid) {
+      costUpdates.push({ field, supplier_record_id: sid, value });
+    } else {
+      fields[field] = value;
+    }
+  });
+  const reason = document.getElementById("modify-reason")?.value.trim();
+  if (!reason) { toast("请输入修改原因", "error"); return; }
+  if (!Object.keys(fields).length && !costUpdates.length) { toast("未检测到修改字段", "error"); return; }
+  try {
+    const rec = await API.post("/api/reconciliation/manual-modify", { order_id: orderId, fields, cost_updates: costUpdates, reason });
+    toast("修改已保存，已重新校验", "success");
+    closeModify();
+    await load();
+  } catch (e) {
+    toast(e.message || "修改失败", "error");
+  }
+}
+
 document.getElementById("btn-run").onclick = runReconcile;
+document.getElementById("btn-batch-cost").onclick = openBatchCost;
+document.getElementById("oc-check-all").addEventListener("change", e => {
+  const on = e.target.checked;
+  currentRows.forEach(r => {
+    if (!shouldShowOrderCost(r)) return;
+    if (on) rememberOrder(r);
+    else selectedOrders.delete(orderKey(r));
+  });
+  document.querySelectorAll(".oc-check").forEach(cb => { cb.checked = on; });
+  syncBatchCostButton();
+});
+document.querySelector("#recon-table tbody").addEventListener("change", e => {
+  const cb = e.target.closest(".oc-check");
+  if (!cb) return;
+  const r = currentRows[Number(cb.dataset.i)];
+  if (!r) return;
+  if (cb.checked) rememberOrder(r);
+  else selectedOrders.delete(orderKey(r));
+  syncBatchCostButton();
+});
 document.getElementById("btn-query").onclick = () => { STATE.page = 1; load(); };
 document.getElementById("btn-reset").onclick = () => {
   ["f-order-id", "f-status", "f-anomaly"].forEach(id =>

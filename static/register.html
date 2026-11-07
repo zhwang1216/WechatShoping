@@ -5,56 +5,56 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>注册 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
-<style>
-  .register-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px 16px; }
-  .register-card { width: 460px; max-width: 100%; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 32px 28px; box-shadow: 0 4px 16px rgba(0,0,0,.06); }
-  .register-card .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; justify-content: center; margin-bottom: 6px; }
-  .register-card .sub { text-align: center; color: var(--text-light); font-size: 12px; margin-bottom: 20px; }
-  .register-form { display: flex; flex-direction: column; gap: 14px; }
-  .register-form label { font-size: 12px; color: var(--text-light); display: block; margin-bottom: 4px; }
-  .register-form input[type=text], .register-form input[type=password] { width: 100%; height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; font-size: 14px; box-sizing: border-box; }
-  .register-form input:focus { outline: none; border-color: var(--primary); }
-  .hint { font-size: 12px; color: var(--text-light); }
-  #register-error { display: none; background: #fef2f2; color: var(--danger); border-radius: 6px; padding: 10px 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
-  #register-ok { display: none; background: #f0fdf4; color: var(--success); border-radius: 6px; padding: 14px 12px; font-size: 13px; line-height: 1.8; text-align: center; }
-  #register-ok a { font-weight: 600; }
-  #register-btn { height: 44px; font-size: 14px; }
-  .back-login { text-align: center; font-size: 13px; margin-top: 14px; }
-  .back-login a { color: var(--primary); }
-</style>
 </head>
 <body>
-<div class="register-wrap">
-  <div class="register-card">
-    <div class="brand"><span class="logo">微</span>微信小店对账与利润核算系统</div>
-    <div class="sub">注册账号并创建你的独立店铺数据空间</div>
+<div class="auth-wrap">
+  <aside class="auth-banner">
+    <div class="auth-banner-deco d1"></div>
+    <div class="auth-banner-deco d2"></div>
+    <div class="auth-banner-deco d3"></div>
+    <div class="auth-banner-inner">
+      <div class="auth-logo">微</div>
+      <h1 class="auth-title">加入微信小店对账系统</h1>
+      <p class="auth-slogan">注册账号即可创建独立店铺数据空间<br>开启高效对账与利润核算之旅</p>
+      <ul class="auth-features">
+        <li>独立数据空间，多店铺互不干扰</li>
+        <li>Excel 一键导入，自动标准化对账</li>
+        <li>经营全景看板，利润趋势随时掌握</li>
+      </ul>
+    </div>
+  </aside>
+  <main class="auth-main">
+    <div class="auth-card wide">
+      <div class="brand"><span class="logo">微</span>微信小店对账</div>
+      <div class="sub">注册账号并创建你的独立店铺数据空间</div>
 
-    <form class="register-form" id="register-form">
-      <div>
-        <label for="username">用户名</label>
-        <input id="username" type="text" autocomplete="username" placeholder="3-32 位字母、数字、下划线、连字符或点">
-      </div>
-      <div>
-        <label for="password">登录密码</label>
-        <input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位，且同时包含字母和数字">
-      </div>
-      <div>
-        <label for="confirm">确认密码</label>
-        <input id="confirm" type="password" autocomplete="new-password" placeholder="再次输入登录密码">
-        <div class="pwd-match-hint" id="pwd-match" aria-live="polite"></div>
-      </div>
-      <div>
-        <label for="store-name">店铺名称</label>
-        <input id="store-name" type="text" placeholder="用于标识你的数据空间，1-64 个字符">
-      </div>
+      <form class="auth-form" id="register-form">
+        <div>
+          <label for="username">用户名</label>
+          <input id="username" type="text" autocomplete="username" placeholder="3-32 位字母、数字、下划线、连字符或点">
+        </div>
+        <div>
+          <label for="password">登录密码</label>
+          <input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位，且同时包含字母和数字">
+        </div>
+        <div>
+          <label for="confirm">确认密码</label>
+          <input id="confirm" type="password" autocomplete="new-password" placeholder="再次输入登录密码">
+          <div class="pwd-match-hint" id="pwd-match" aria-live="polite"></div>
+        </div>
+        <div>
+          <label for="store-name">店铺名称</label>
+          <input id="store-name" type="text" placeholder="用于标识你的数据空间，1-64 个字符">
+        </div>
 
-      <div id="register-error"></div>
-      <button class="btn" id="register-btn" type="submit">注 册</button>
-    </form>
+        <div id="register-error" class="auth-error"></div>
+        <button class="btn auth-btn" id="register-btn" type="submit">注 册</button>
+      </form>
 
-    <div id="register-ok"></div>
-    <div class="back-login"><a href="/login">已有账号？返回登录</a></div>
-  </div>
+      <div id="register-ok" class="auth-ok"></div>
+      <div class="auth-alt"><a href="/login">已有账号？返回登录</a></div>
+    </div>
+  </main>
 </div>
 
 <script src="/static/api.js"></script>

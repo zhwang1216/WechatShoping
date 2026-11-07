@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>创建用户 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
 <style>
@@ -34,10 +35,6 @@
 }
 .create-field.is-off { opacity: .55; }
 .create-field.is-off input { background: var(--bg); }
-.field-err {
-  font-size: 12px; color: var(--danger); line-height: 1.4;
-  min-height: 16px; margin-top: 2px;
-}
 .create-foot {
   grid-column: 1 / -1; display: flex; align-items: flex-end;
   justify-content: space-between; gap: 16px; flex-wrap: wrap;
@@ -77,39 +74,7 @@
 </style>
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard">经营总览</a>
-    <a href="/data-import">数据导入</a>
-    <a href="/orders">普通订单</a>
-    <a href="/refund-orders">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation">对账成本</a>
-    <a href="/profit">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group nav-group-current" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create" class="active">创建用户</a>
-      <a href="/stores">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
+<!--@app-shell-->
   <div class="page-title">创建用户</div>
   <div class="page-desc">创建登录账号，并为成员分配独立的店铺数据空间。</div>
 
@@ -185,6 +150,7 @@
     </form>
   </div>
 
+</div>
 </div>
 <script src="/static/api.js"></script>
 <script src="/static/auth_nav.js"></script>

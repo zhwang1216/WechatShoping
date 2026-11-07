@@ -38,3 +38,14 @@ Thumbs.db
 *.tar.gz
 *.zip
 *.log
+
+# PyInstaller 打包产物与中间文件
+dist/
+build/pyinstaller_work/
+build/微信小店对账系统/
+build/*.pkg
+build/*.toc
+build/*.pyz
+build/*.manifest
+build/*.exe
+build/*.dll

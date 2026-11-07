@@ -2,43 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>操作日志 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard">经营总览</a>
-    <a href="/data-import">数据导入</a>
-    <a href="/orders">普通订单</a>
-    <a href="/refund-orders">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation">对账成本</a>
-    <a href="/profit">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs" class="active">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create">创建用户</a>
-      <a href="/stores">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
+<!--@app-shell-->
   <div class="page-title">操作日志</div>
   <div class="page-desc">记录系统全部操作（导入、对账、核算、导出、数据读写、备份恢复等）。月份筛选按操作发生时间（time）归属（左闭右开区间），统计卡片与表格同筛选。</div>
 
@@ -76,99 +45,52 @@
 
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/common_table.js"></script>
+<script src="/static/list_page.js"></script>
 <script src="/static/auth_nav.js"></script>
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
 <script src="/static/store_scope.js"></script>
 <script>
-const STATE = { page: 1, size: 50 };
-
-const MF = new MonthFilter({
-  container: "month-filter",
-  timeLabel: "操作发生时间",
-  onChange: () => { STATE.page = 1; load(); },
-});
-
-const SS = new StoreScope({
-  container: "store-scope",
-  onChange: () => { STATE.page = 1; load(); },
-});
-
-function queryStr() {
-  const p = new URLSearchParams();
-  p.set("page", STATE.page); p.set("page_size", STATE.size);
-  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
-  SS.appendTo(p);
-  const v = id => document.getElementById(id).value.trim();
-  if (v("f-keyword")) p.set("keyword", v("f-keyword"));
-  if (v("f-action")) p.set("action", v("f-action"));
-  if (v("f-operator")) p.set("operator", v("f-operator"));
-  return p.toString();
-}
-
-async function load() {
-  const state = document.getElementById("table-state");
-  const tbody = document.querySelector("#log-table tbody");
-  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
-  tbody.innerHTML = "";
-  try {
-    const data = await API.get(`/api/logs?${queryStr()}`);
-    renderStats(data.statistics);
-    state.innerHTML = "";
-    if (!data.entries.length) {
-      state.innerHTML = `<div class="empty-state"><div class="icon">🗂</div>当前筛选（${esc(MF.getLabel())}）内没有日志记录<br><span style="font-size:12px">可切换月份或选择「全部」</span></div>`;
-    } else {
-      tbody.innerHTML = data.entries.map(e => `<tr>
-        <td style="white-space:nowrap">${fmtTime(e.time)}</td>
-        <td><span class="badge blue">${esc(e.action)}</span></td>
-        <td>${esc(e.operator || "—")}</td>
-        <td>${e.result === "error"
-            ? '<span class="badge red">失败</span>'
-            : '<span class="badge green">成功</span>'}</td>
-        <td style="max-width:520px;white-space:normal;font-size:12px;color:var(--text-light)">${esc(fmtDetail(e.detail))}</td>
-      </tr>`).join("");
-    }
-    document.getElementById("table-hint").textContent = data.total ? `第 ${data.page}/${data.pages} 页` : "";
-    renderPager(document.getElementById("pager"), data, {
-      onPage: p => { STATE.page = p; load(); },
-      onSize: s => { STATE.size = s; STATE.page = 1; load(); },
-    });
-  } catch (e) {
-    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败，请稍后重试")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
-    renderStats(null);
-  }
-}
-
 function fmtDetail(d) {
   if (d === null || d === undefined) return "—";
   if (typeof d === "string") return d;
-  try {
-    return JSON.stringify(d);
-  } catch (e) {
-    return String(d);
-  }
+  try { return JSON.stringify(d); } catch (e) { return String(d); }
 }
 
-function renderStats(s) {
-  const el = document.getElementById("stat-grid");
-  if (!s) { el.innerHTML = ""; return; }
-  el.innerHTML = [
+const LOG_PAGE = new ListPage({
+  tableId: "log-table",
+  url: "/api/logs",
+  itemsKey: "entries",
+  rowKey: e => e.record_id || (e.time + "|" + e.action + "|" + (e.operator || "")),
+  pageSize: 50,
+  timeLabel: "操作发生时间",
+  filters: [
+    { id: "f-keyword", param: "keyword" },
+    { id: "f-action", param: "action" },
+    { id: "f-operator", param: "operator" },
+  ],
+  columns: [
+    { title: "时间", render: e => `<span style="white-space:nowrap">${fmtTime(e.time)}</span>` },
+    { title: "动作", render: e => `<span class="badge blue">${esc(e.action)}</span>` },
+    { title: "操作人", render: e => esc(e.operator || "—") },
+    { title: "结果", render: e => e.result === "error"
+      ? '<span class="badge red">失败</span>'
+      : '<span class="badge green">成功</span>' },
+    { title: "详情", render: e =>
+      `<span style="display:block;max-width:520px;white-space:normal;font-size:12px;color:var(--text-light)">${esc(fmtDetail(e.detail))}</span>` },
+  ],
+  stats: s => s ? renderStatCards(null, [
     ["日志条数", s.entry_count, ""],
     ["操作人数", s.operator_count, ""],
     ["失败操作", s.error_count, s.error_count ? "danger" : "success"],
-  ].map(([l, v, c]) => `<div class="stat-item"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("")
-    + `<div style="grid-column:1/-1;font-size:12px;color:var(--text-light)">时间口径：操作发生时间（time 字段）。</div>`;
-}
+  ], "时间口径：操作发生时间（time 字段）。") : "",
+  emptyHtml: mf =>
+    `<div class="empty-state"><div class="icon">🗂</div>当前筛选（${esc(mf.getLabel())}）内没有日志记录<br>
+     <span style="font-size:12px">可切换月份或选择「全部」</span></div>`,
+});
 
-document.getElementById("btn-query").onclick = () => { STATE.page = 1; load(); };
-document.getElementById("btn-reset").onclick = () => {
-  ["f-keyword", "f-action", "f-operator"].forEach(id => document.getElementById(id).value = "");
-  STATE.page = 1;
-  MF.reset();
-};
-["f-keyword", "f-action", "f-operator"].forEach(id =>
-  document.getElementById(id).addEventListener("keydown", e => { if (e.key === "Enter") { STATE.page = 1; load(); } }));
-load();
+LOG_PAGE.reload();
 </script>
 </body>
 </html>

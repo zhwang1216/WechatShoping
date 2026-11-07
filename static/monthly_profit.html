@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>每月盈利 - 微信小店对账与利润核算系统</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.page-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+.page-head .page-title { margin-bottom: 0; }
+.page-head .page-desc { margin-bottom: 0; flex: 1 1 320px; }
+#month-table tfoot td{font-weight:700;background:#fff;border-top:2px solid var(--border);position:sticky;bottom:0}
+.fee-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.fee-field{display:flex;flex-direction:column;gap:6px}
+.fee-field.full{grid-column:1/-1}
+.fee-field label{font-size:13px;color:var(--text-light,#6b7280)}
+.fee-field input{height:44px;padding:0 12px;border:1px solid var(--border,#e5e7eb);border-radius:8px;font-size:14px}
+.fee-field input:focus{outline:none;border-color:var(--primary,#0f766e)}
+.fee-summary{font-size:12px;color:var(--text-light,#6b7280);background:var(--bg-page,#f9fafb);border-radius:8px;padding:8px 12px;margin-bottom:14px;line-height:1.7}
+</style>
+</head>
+<body>
+<!--@app-shell-->
+  <div class="page-head">
+    <div class="page-title">每月盈利</div>
+    <div class="page-desc">按订单下单月份汇总销售笔数、销售额、货品成本、快递成本、技术服务费和退款金额。广告费和其他费用按月登记，选定店铺后点击「编辑费用」修改。每月盈利 = 销售额 − 货品成本 − 快递成本 − 技术服务费 − 退款金额 − 广告费 − 其他费用。</div>
+  </div>
+
+  <div class="card">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+  </div>
+
+  <div class="stat-grid" id="stat-grid"></div>
+
+  <div class="card table-card">
+    <div class="card-head"><h3 style="margin:0">月度明细</h3><span class="hint" id="table-hint"></span></div>
+    <div class="table-wrap">
+      <table id="month-table">
+        <thead><tr>
+          <th>月份</th>
+          <th class="num">销售笔数</th>
+          <th class="num">销售额</th>
+          <th class="num">货品成本合计</th>
+          <th class="num">快递成本合计</th>
+          <th class="num">技术服务费</th>
+          <th class="num">退款金额</th>
+          <th>广告费</th>
+          <th>其他费用</th>
+          <th class="num">每月盈利</th>
+          <th>操作</th>
+        </tr></thead>
+        <tbody></tbody>
+        <tfoot></tfoot>
+      </table>
+    </div>
+    <div id="table-state"></div>
+  </div>
+</div>
+</div>
+<script src="/static/api.js"></script>
+<script src="/static/modal.js"></script>
+<script src="/static/auth_nav.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/month_filter.js"></script>
+<script src="/static/store_scope.js"></script>
+<script>
+const MONEY_OK = /^\d+(\.\d{1,2})?$/;
+let currentRows = [];
+let followedDataMonth = false;
+
+function timeFilterExplicit() {
+  const q = new URLSearchParams(location.search);
+  return q.has("month") || q.has("from") || q.has("to") || q.get("t") === "all";
+}
+
+const MF = new MonthFilter({
+  container: "month-filter",
+  timeLabel: "订单下单时间",
+  onChange: () => load(),
+});
+const SS = new StoreScope({
+  container: "store-scope",
+  onChange: () => load(),
+});
+
+function queryStr() {
+  const p = new URLSearchParams();
+  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
+  SS.appendTo(p);
+  return p.toString();
+}
+
+function canEditAd() {
+  return !SS.multi || !!SS.storeId;
+}
+
+function profitHtml(v) {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  const cls = n < 0 ? "profit-neg" : "profit-pos";
+  return `<span class="${cls}">${fmtMoney(v)}</span>`;
+}
+
+function missingNote(n, label) {
+  return n > 0 ? `<div class="sub"><span class="badge orange">${n} 单${label}待核对</span></div>` : "";
+}
+
+function renderStats(totals) {
+  const t = totals || {};
+  const cards = [
+    ["销售笔数", t.order_count ?? 0, ""],
+    ["销售额", fmtMoney(t.sales_amount), ""],
+    ["货品成本合计", fmtMoney(t.product_cost_total), ""],
+    ["快递成本合计", fmtMoney(t.courier_fee_total), ""],
+    ["技术服务费合计", fmtMoney(t.technical_service_fee), ""],
+    ["退款金额", fmtMoney(t.refund_amount), ""],
+    ["广告费", fmtMoney(t.ad_expense), ""],
+    ["其他费用", fmtMoney(t.other_expense), ""],
+    ["每月盈利", profitHtml(t.profit), ""],
+  ];
+  document.getElementById("stat-grid").innerHTML = cards.map(([l, v]) =>
+    `<div class="stat-item"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
+}
+
+function renderTotal(t) {
+  return `<tr>
+    <td>合计</td>
+    <td class="num">${t.order_count ?? 0}</td>
+    <td class="num">${fmtMoney(t.sales_amount)}</td>
+    <td class="num">${fmtMoney(t.product_cost_total)}</td>
+    <td class="num">${fmtMoney(t.courier_fee_total)}</td>
+    <td class="num">${fmtMoney(t.technical_service_fee)}</td>
+    <td class="num">${fmtMoney(t.refund_amount)}</td>
+    <td class="num">${fmtMoney(t.ad_expense)}</td>
+    <td class="num">${fmtMoney(t.other_expense)}</td>
+    <td class="num">${profitHtml(t.profit)}</td>
+    <td></td>
+  </tr>`;
+}
+
+function renderRows(rows) {
+  const editable = canEditAd();
+  return rows.map((r, i) => {
+    const ad = fmtMoney(r.ad_expense);
+    const other = `${fmtMoney(r.other_expense)}${r.other_note ? `<div class="sub">${esc(r.other_note)}</div>` : ""}`;
+    const action = editable
+      ? `<button class="btn secondary" type="button" data-edit-fee="${i}">编辑费用</button>`
+      : "";
+    return `<tr>
+      <td>${esc(r.month)}</td>
+      <td class="num">${r.order_count}</td>
+      <td class="num">${fmtMoney(r.sales_amount)}</td>
+      <td class="num">${fmtMoney(r.product_cost_total)}${missingNote(r.product_cost_missing_count, "货品成本")}</td>
+      <td class="num">${fmtMoney(r.courier_fee_total)}${missingNote(r.courier_fee_missing_count, "快递成本")}</td>
+      <td class="num">${fmtMoney(r.technical_service_fee)}</td>
+      <td class="num">${fmtMoney(r.refund_amount)}</td>
+      <td class="num">${ad}</td>
+      <td class="num">${other}</td>
+      <td class="num">${profitHtml(r.profit)}</td>
+      <td>${action}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function load() {
+  const state = document.getElementById("table-state");
+  const tbody = document.querySelector("#month-table tbody");
+  const tfoot = document.querySelector("#month-table tfoot");
+  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
+  tbody.innerHTML = "";
+  tfoot.innerHTML = "";
+  await SS.ready;
+  try {
+    const data = await API.get(`/api/monthly-profit?${queryStr()}`);
+    currentRows = data.months || [];
+    if (!followedDataMonth && !timeFilterExplicit() && !currentRows.length
+        && data.latest_data_month && data.latest_data_month !== MF.state.month) {
+      followedDataMonth = true;
+      toast(`本月没有订单，已显示 ${data.latest_data_month} 的技术服务费合计`, "info");
+      MF._set({ mode: "month", month: data.latest_data_month, from: "", to: "" });
+      return;
+    }
+    renderStats(data.totals);
+    state.innerHTML = "";
+    if (!data.has_calculation && !currentRows.length) {
+      state.innerHTML = `<div class="empty-state"><div class="icon">📈</div>还没有可汇总的核算结果<br><span style="font-size:12px">请先在「利润核算」执行核算。选定店铺后可手填广告费和其他费用。</span></div>`;
+    } else if (!currentRows.length) {
+      const diag = data.diagnosis
+        ? `<br><span style="font-size:12px;color:var(--warning,#d97706)">${esc(data.diagnosis)}</span>`
+        : "";
+      const elsewhere = data.latest_data_month
+        ? `${esc(data.latest_data_month)} 有订单数据，技术服务费合计 ${fmtMoney(data.latest_technical_service_fee)}。<button type="button" class="link-btn" id="jump-fee-month">查看该月</button>`
+        : (data.calculable_order_months || []).length
+          ? `库内可统计月份：${esc((data.calculable_order_months || []).join("、"))}。可点「全部」查看。`
+          : "可切换月份或选择「全部」";
+      state.innerHTML = `<div class="empty-state"><div class="icon">📆</div>当前筛选内没有月份<br><span style="font-size:12px">${elsewhere}</span>${diag}</div>`;
+    } else {
+      tbody.innerHTML = renderRows(currentRows);
+      tfoot.innerHTML = renderTotal(data.totals || {});
+      document.getElementById("table-hint").textContent = `共 ${currentRows.length} 个月`;
+    }
+    if (!currentRows.length) document.getElementById("table-hint").textContent = "";
+    const jump = document.getElementById("jump-fee-month");
+    if (jump) jump.onclick = () => {
+      followedDataMonth = true;
+      MF._set({ mode: "month", month: data.latest_data_month, from: "", to: "" });
+    };
+  } catch (e) {
+    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
+  }
+}
+
+function openEditFeeDialog(row) {
+  const adVal = row.ad_recorded ? row.ad_expense : "";
+  const otherVal = row.other_recorded ? row.other_expense : "";
+  const noteVal = row.other_note || "";
+  const bodyHtml = `
+    <div class="fee-summary">月份 <b>${esc(row.month)}</b>　销售额 ${fmtMoney(row.sales_amount)}　退款 ${fmtMoney(row.refund_amount)}<br>每月盈利 = 销售额 − 货品成本 − 快递成本 − 技术服务费 − 退款金额 − 广告费 − 其他费用</div>
+    <div class="fee-form">
+      <div class="fee-field">
+        <label>广告费</label>
+        <input id="fee-ad" type="text" inputmode="decimal" autocomplete="off" value="${esc(adVal)}" placeholder="0.00">
+        <div class="field-err" id="err-ad"></div>
+      </div>
+      <div class="fee-field">
+        <label>其他费用</label>
+        <input id="fee-other" type="text" inputmode="decimal" autocomplete="off" value="${esc(otherVal)}" placeholder="0.00">
+        <div class="field-err" id="err-other"></div>
+      </div>
+      <div class="fee-field full">
+        <label>其他费用说明（选填，最多 40 字）</label>
+        <input id="fee-note" type="text" maxlength="40" autocomplete="off" value="${esc(noteVal)}" placeholder="如：软件费、推广服务费">
+      </div>
+    </div>`;
+  openModal({
+    title: `编辑 ${esc(row.month)} 费用`,
+    bodyHtml,
+    width: 480,
+    actions: [
+      { text: "取消", kind: "secondary", onClick: () => {} },
+      {
+        text: "保存",
+        kind: "primary",
+        onClick: async () => {
+          const adInput = document.getElementById("fee-ad");
+          const otherInput = document.getElementById("fee-other");
+          const noteInput = document.getElementById("fee-note");
+          const ad = adInput.value.trim();
+          const other = otherInput.value.trim();
+          const note = noteInput.value.trim();
+          const errAd = document.getElementById("err-ad");
+          const errOther = document.getElementById("err-other");
+          errAd.textContent = "";
+          errOther.textContent = "";
+          let ok = true;
+          if (!MONEY_OK.test(ad)) {
+            errAd.textContent = "须为非负金额，最多两位小数";
+            ok = false;
+          }
+          if (!MONEY_OK.test(other)) {
+            errOther.textContent = "须为非负金额，最多两位小数";
+            ok = false;
+          }
+          if (!ok) return false;
+          const target = SS.writeTarget();
+          await Promise.all([
+            API.post("/api/ad-expenses", Object.assign({ month: row.month, amount: ad }, target)),
+            API.post("/api/other-expenses", Object.assign({ month: row.month, amount: other, note }, target)),
+          ]);
+          toast(`${row.month} 费用已保存，每月盈利已重算`, "success");
+          load();
+        },
+      },
+    ],
+  });
+}
+
+document.querySelector("#month-table").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-edit-fee]");
+  if (!btn) return;
+  const i = Number(btn.getAttribute("data-edit-fee"));
+  const row = currentRows[i];
+  if (!row) return;
+  openEditFeeDialog(row);
+});
+
+SS.ready.then(() => load());
+</script>
+</body>
+</html>

@@ -346,7 +346,6 @@ class TestLogsApi(unittest.TestCase):
         member_paths = [
             "/api/orders?page=1&page_size=20&month=2026-10",
             "/api/refund-orders?page=1&page_size=20&month=2026-10",
-            "/api/refund-details?page=1&page_size=20&month=2026-10",
             "/api/supplier-costs?page=1&page_size=20&month=2026-10",
             "/api/anomalies?page=1&page_size=20&month=2026-10",
             "/api/reconciliation?page=1&page_size=20&month=2026-10",

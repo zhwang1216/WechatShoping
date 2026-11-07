@@ -256,8 +256,8 @@ class TestDeleteClearData(unittest.TestCase):
                     "import_records", "raw_records"):
             self.assertIsInstance(store["categories"][key], int)
             self.assertGreater(store["categories"][key], 0, f"{key} 应有记录")
-        # 统计口径为 12 类可清理业务数据, 不含 settings
-        self.assertEqual(len(store["categories"]), 12)
+        # 可清理业务数据不含 settings；新增其他费用后为 13 类
+        self.assertEqual(len(store["categories"]), 13)
         self.assertNotIn("settings", store["categories"])
 
     def test_c02_delete_with_clear(self):

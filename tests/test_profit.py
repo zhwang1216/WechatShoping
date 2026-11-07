@@ -219,7 +219,7 @@ class TestProfit(unittest.TestCase):
 
         # 核算元数据：规则版本 / 批次 / 时间
         self.assertTrue(data["calculation_id"].startswith("calc_"))
-        self.assertEqual(data["rules_version"], "P1.1")
+        self.assertEqual(data["rules_version"], "P1.2")
         self.assertTrue(data["calculated_at"])
         self.assertEqual(data["policies"], {
             "refund_deduction_status": "unknown",
@@ -355,7 +355,7 @@ class TestProfit(unittest.TestCase):
                          "not_deducted")
         self.assertEqual(resp["data"]["policies"]["platform_subsidy_included"],
                          "unknown")
-        self.assertEqual(resp["data"]["rules_version"], "P1.1")
+        self.assertEqual(resp["data"]["rules_version"], "P1.2")
         self.assertTrue(resp["data"]["declaration"])
 
         # options 反映新口径
@@ -364,7 +364,7 @@ class TestProfit(unittest.TestCase):
         cfg = resp["data"]["config"]
         self.assertEqual(cfg["policies"]["refund_deduction_status"], "not_deducted")
         self.assertIn("未扣除", cfg["labels"]["refund_deduction_status"])
-        self.assertEqual(resp["data"]["rules_version"], "P1.1")
+        self.assertEqual(resp["data"]["rules_version"], "P1.2")
         # 枚举选项完整
         self.assertEqual(set(resp["data"]["refund_deduction_status"]),
                          {"unknown", "not_deducted", "deducted"})
@@ -487,7 +487,7 @@ class TestProfit(unittest.TestCase):
         # P1005 重复成本、P1006 成本缺失）+ 利润类 1（P1003 负利润）
         self.assertEqual(s["open_anomaly_count"], 5)
         self.assertTrue(s["has_calculation"])
-        self.assertEqual(s["latest_calculation"]["rules_version"], "P1.1")
+        self.assertEqual(s["latest_calculation"]["rules_version"], "P1.2")
         self.assertEqual(s["latest_calculation"]["calculation_id"],
                          self.latest_calc_id)
         self.assertEqual(s["policies"], {
@@ -619,7 +619,7 @@ class TestProfit(unittest.TestCase):
 
         # 订单明细含 trace：微信批次 + 供应商批次 + 规则版本
         r = self._profit_of("P1001")
-        self.assertEqual(r["rules_version"], "P1.1")
+        self.assertEqual(r["rules_version"], "P1.2")
         self.assertEqual(r["calculation_id"], new_calc_id)
         self.assertTrue(r["created_at"])
         self.assertEqual(len(r["trace"]["batch_ids"]["wechat_orders"]), 1)
@@ -638,7 +638,7 @@ class TestProfit(unittest.TestCase):
         self.assertIn(self.first_calc_id, calc_ids)
         # 运行记录含规则版本、口径与数据批次
         first_run = next(x for x in runs if x["record_id"] == self.first_calc_id)
-        self.assertEqual(first_run["rules_version"], "P1.1")
+        self.assertEqual(first_run["rules_version"], "P1.2")
         self.assertEqual(first_run["policies"]["refund_deduction_status"],
                          "unknown")
 

@@ -2,74 +2,112 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>数据导入 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
+<style>
+.page-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+.page-head .page-title { margin-bottom: 0; }
+.page-head .page-desc { margin-bottom: 0; }
+.import-card { padding: 16px; }
+.upload-grid { gap: 10px; }
+.import-zone {
+  position: relative;
+  display: flex; align-items: center; gap: 14px; text-align: left;
+  min-height: 100px;
+  padding: 24px 18px 24px 22px; border: 1px dashed var(--border); border-radius: 10px;
+  background: #fff; color: var(--text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease, transform .15s ease;
+  overflow: hidden;
+}
+.import-zone::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+  background: var(--zone-accent, var(--primary));
+}
+.import-zone:hover, .import-zone.drag {
+  border-color: var(--zone-accent, var(--primary)); border-style: solid;
+  background: #f8fafa; box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+.import-zone .icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; flex: 0 0 44px; font-size: 22px; border-radius: 10px;
+  background: color-mix(in srgb, var(--zone-accent, var(--primary)) 12%, #fff);
+  color: var(--zone-accent, var(--primary));
+}
+.import-zone .uz-title { font-size: 16px; font-weight: 700; }
+.import-zone .uz-hint { font-size: 12px; color: var(--text-light); margin-top: 3px; }
+.import-zone .uz-action {
+  margin-left: auto; font-size: 13px; font-weight: 600; white-space: nowrap;
+  padding: 7px 14px; border-radius: 6px;
+  color: var(--zone-accent, var(--primary));
+  background: color-mix(in srgb, var(--zone-accent, var(--primary)) 10%, #fff);
+  border: 1px solid color-mix(in srgb, var(--zone-accent, var(--primary)) 35%, #fff);
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.import-zone:hover .uz-action, .import-zone.drag .uz-action {
+  background: var(--zone-accent, var(--primary)); color: #fff;
+  border-color: var(--zone-accent, var(--primary));
+}
+#zone-wechat { --zone-accent: var(--primary); }
+#zone-supplier { --zone-accent: var(--warning); }
+.file-info-bar { margin: 12px 0 0; padding: 12px 14px; }
+.batch-filters { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.pv-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px; flex-wrap: wrap; }
+#rows-modal .filter-bar { margin-bottom: 12px; }
+.pv-actions .force-opt { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-right: auto; }
+@media (max-width: 800px) {
+  .import-zone { flex-wrap: wrap; min-height: 88px; padding: 20px 18px 20px 22px; }
+  .import-zone .uz-action { margin-left: 0; }
+}
+</style>
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard">经营总览</a>
-    <a href="/data-import" class="active">数据导入</a>
-    <a href="/orders">普通订单</a>
-    <a href="/refund-orders">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation">对账成本</a>
-    <a href="/profit">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create">创建用户</a>
-      <a href="/stores">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-    <span class="meta" id="nav-meta"></span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
-  <div class="page-title">Excel 数据导入</div>
-  <div class="page-desc">上传微信小店订单 Excel 或供应商/物流成本 Excel，预览确认后写入本地 JSON 数据。</div>
-  <div class="declare-banner">
-    口径声明：本系统计算的是经营贡献利润；未导入广告推广、达人佣金、运费险、赔付、人工、仓储、税费等数据时，不代表完整会计净利润。
+<!--@app-shell-->
+  <div class="page-head">
+    <div class="page-title">数据导入</div>
+    <div class="page-desc">选择 Excel 文件，指定店铺后确认导入。支持 .xlsx 与 .xls 格式。利润为经营贡献口径，未导入广告/佣金/运费险/赔付/人工/仓储/税费时不代表完整会计净利润。</div>
   </div>
 
-  <div class="card">
-    <h3>上传文件（.xlsx，仅支持 Excel 2007+ 格式）</h3>
+  <div class="card import-card">
     <div class="upload-grid">
       <div>
-        <div class="upload-zone" id="zone-wechat">
+        <div class="import-zone" id="zone-wechat">
           <div class="icon">📄</div>
-          <div><b>微信小店订单 Excel</b></div>
-          <div style="font-size:12px;margin-top:4px">订单号 / 下单时间 / 订单状态 / 实收金额 / 退款金额 …</div>
+          <div>
+            <div class="uz-title">微信订单</div>
+            <div class="uz-hint">订单号、下单时间、状态、实收、退款</div>
+          </div>
+          <div class="uz-action">选择文件</div>
         </div>
-        <input type="file" id="file-wechat" accept=".xlsx" hidden>
+        <input type="file" id="file-wechat" accept=".xlsx,.xls" hidden>
       </div>
       <div>
-        <div class="upload-zone" id="zone-supplier">
+        <div class="import-zone" id="zone-supplier">
           <div class="icon">🚚</div>
-          <div><b>供应商及物流成本 Excel</b></div>
-          <div style="font-size:12px;margin-top:4px">主订单编号 / 总金额 / 成本 / 快递费 / 平台补贴 …</div>
+          <div>
+            <div class="uz-title">供应商成本</div>
+            <div class="uz-hint">主订单编号、总金额、成本、快递费、补贴</div>
+          </div>
+          <div class="uz-action">选择文件</div>
         </div>
-        <input type="file" id="file-supplier" accept=".xlsx" hidden>
+        <input type="file" id="file-supplier" accept=".xlsx,.xls" hidden>
       </div>
     </div>
+    <div id="file-info-bar" class="file-info-bar" hidden>
+      <div class="fi-header">
+        <span class="fi-title">已选文件</span>
+        <span class="fi-actions">
+          <button class="btn secondary" id="fi-change">更换文件</button>
+          <button class="btn secondary" id="fi-cancel">取消导入</button>
+        </span>
+      </div>
+      <div class="kv-grid" id="fi-meta"></div>
+      <div id="fi-sheets"></div>
+      <div id="fi-status"></div>
+    </div>
   </div>
-
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
 
   <div class="stat-grid" id="batch-stats"></div>
 
@@ -79,7 +117,11 @@
         <button class="btn secondary" id="btn-refresh-batches">刷新</button>
       </div>
     </div>
-    <div class="filter-grid">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+    <div class="filter-grid batch-filters">
       <div class="filter-item"><label>批次/文件名关键词</label><input id="f-keyword" placeholder="批次号或文件名包含"></div>
       <div class="filter-item"><label>数据类型</label>
         <select id="f-source">
@@ -96,9 +138,8 @@
     <div class="table-wrap">
       <table id="batch-table">
         <thead><tr>
-          <th>批次号</th><th>类型</th><th>文件名</th><th id="th-store" style="display:none">所属店铺</th><th>导入时间</th><th>状态</th>
-          <th class="num">总行</th><th class="num">成功</th><th class="num">更新</th>
-          <th class="num">跳过</th><th class="num">重复</th><th class="num">失败</th><th class="col-op">操作</th>
+          <th>批次号</th><th>类型</th><th>文件名</th><th id="th-store" style="display:none">所属店铺</th><th>导入时间</th><th>操作人</th><th>状态</th>
+          <th class="num">总行</th><th class="num">成功</th><th class="num">失败</th><th class="num" title="更新+跳过+重复">其他</th><th class="col-op">操作</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -128,16 +169,17 @@
       <div id="pv-hints"></div>
       <div class="detail-section">
         <h4>数据预览（前 20 行）</h4>
-        <div class="table-wrap" style="max-height:320px;overflow:auto">
+        <div class="table-wrap">
           <table id="pv-table"><thead></thead><tbody></tbody></table>
         </div>
       </div>
       <div id="pv-sample-errors"></div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-right:auto">
+      <div class="pv-actions">
+        <label class="force-opt">
           <input type="checkbox" id="pv-force"> 强制重新导入（文件已导入过时）
         </label>
         <button class="btn secondary" onclick="closePreview()">取消</button>
+        <button class="btn secondary" id="pv-back-store">返回修改店铺</button>
         <button class="btn" id="pv-confirm">确认导入</button>
       </div>
     </div>
@@ -149,7 +191,7 @@
   <div class="modal">
     <div class="modal-head"><h3 id="rows-title">批次明细</h3><button class="modal-close" onclick="document.getElementById('rows-modal').classList.remove('show')">×</button></div>
     <div class="modal-body">
-      <div class="filter-bar" style="margin-bottom:12px">
+      <div class="filter-bar">
         <div class="filter-item"><label>校验状态</label>
           <select id="rows-status">
             <option value="">全部</option><option value="passed">通过</option>
@@ -159,7 +201,7 @@
         <button class="btn secondary" id="rows-refresh">查询</button>
         <button class="btn secondary" id="rows-export">导出异常清单</button>
       </div>
-      <div class="table-wrap" style="max-height:420px;overflow:auto">
+      <div class="table-wrap">
         <table id="rows-table">
           <thead><tr><th>行号</th><th>校验状态</th><th>错误/警告</th><th>原始数据</th></tr></thead>
           <tbody></tbody>
@@ -182,11 +224,10 @@
         <h4>撤销影响（将删除以下数据）</h4>
         <div class="kv-grid" id="rv-impact"></div>
       </div>
-      <div class="hint-banner" style="background:#fef2f2;border-color:#fecaca;color:#b91c1c">
-        ⚠ 危险操作：撤销前系统会自动创建整店备份；确认后该批次创建的订单/成本/退款/原始记录/异常将被删除，
-        关联的对账与利润结果将被清除并按月自动重算，该批次历史记录一并移除。
+      <div class="hint-banner">
+        撤销前会自动创建整店备份。确认后该批次创建的订单、成本、退款、原始记录和异常将被删除，关联对账与利润结果会清除并按月重算。
       </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+      <div class="pv-actions">
         <button class="btn secondary" onclick="closeRevoke()">取消</button>
         <button class="btn danger" id="rv-confirm">我已了解影响，确认撤销</button>
       </div>
@@ -253,9 +294,9 @@ async function loadMeta() {
   } catch (e) { /* 忽略 */ }
 }
 
-/* 上传店铺选择弹窗：每次打开实时拉取有效店铺，默认不选中；确认后写入 uploadTask 并打开文件选择器 */
-async function openStorePicker(taskType) {
-  uploadTask = { type: taskType, apiPath: IMPORT_API_PATHS[taskType], store: null };
+/* 上传店铺选择弹窗：文件校验通过后弹出，选择/新建店铺后进入预览 */
+async function openStorePicker(taskType, fileInfo) {
+  if (!uploadTask) uploadTask = { type: taskType, apiPath: IMPORT_API_PATHS[taskType], store: null, fileInfo: fileInfo };
   let selected = null;
   let stores = [];
   const fieldErr = (text) => {
@@ -263,7 +304,7 @@ async function openStorePicker(taskType) {
     if (el) { el.textContent = text || ""; el.style.display = text ? "block" : "none"; }
   };
   const syncConfirmBtn = () => {
-    const btn = document.getElementById("um-act-1");
+    const btn = document.getElementById("um-act-2");
     if (btn) btn.disabled = !selected;
     const info = document.getElementById("sp-selected");
     if (info) {
@@ -298,12 +339,13 @@ async function openStorePicker(taskType) {
   };
   const loadStores = async () => {
     const listEl = document.getElementById("sp-list");
+    if (!listEl) return;
     listEl.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载店铺列表…</div>`;
     try {
       const data = await API.get(STORES_API_PATH);
       stores = (data && data.stores) || [];
       if (!stores.length) {
-        listEl.innerHTML = `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px;line-height:1.8">暂无可用店铺——当前账号没有可导入数据的有效店铺，请联系管理员处理</div>`;
+        listEl.innerHTML = `<div style="padding:16px;text-align:center;color:var(--text-light);font-size:13px;line-height:1.8">暂无可用店铺——可点击"+ 新建店铺"创建一个店铺</div>`;
         syncConfirmBtn();
         return;
       }
@@ -316,20 +358,55 @@ async function openStorePicker(taskType) {
       if (retryBtn) retryBtn.onclick = loadStores;
     }
   };
+  const typeLabel = fileInfo && fileInfo.source_type === "wechat_orders" ? "微信订单" : "供应商成本";
+  const listContentHtml = `
+        <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-bottom:10px">请选择本次导入数据所属的店铺。确认后进入数据预览。</div>
+        <div><label>搜索店铺</label>
+          <input id="sp-search" placeholder="搜索店铺名称 / 归属成员" autocomplete="off"></div>
+        <div style="margin-top:10px"><label>选择店铺（必选，同名店铺凭店铺 ID 区分）</label>
+          <div class="member-pick-list" id="sp-list"></div>
+          <span class="field-err" id="sp-err" style="display:none"></span></div>
+        <div class="store-info-bar sp-selected" id="sp-selected" style="display:none;margin-top:12px"></div>`;
+  const restoreListEvents = () => {
+    const searchEl = document.getElementById("sp-search");
+    if (searchEl) searchEl.oninput = e => renderList(e.target.value);
+  };
+  const restoreListView = () => {
+    const content = document.getElementById("sp-content");
+    if (content) content.innerHTML = listContentHtml;
+    restoreListEvents();
+    syncConfirmBtn();
+  };
+  const onCreated = async (newStore) => {
+    const content = document.getElementById("sp-content");
+    if (content) content.innerHTML = listContentHtml;
+    restoreListEvents();
+    await loadStores();
+    selected = stores.find(s => s.store_id === newStore.store_id) || null;
+    if (selected) {
+      const radio = document.querySelector(`#sp-list input[name="sp-store"][value="${esc(selected.store_id)}"]`);
+      if (radio) {
+        radio.checked = true;
+        document.querySelectorAll("#sp-list .mp-item").forEach(item =>
+          item.classList.toggle("picked", item.contains(radio)));
+      }
+    }
+    syncConfirmBtn();
+    toast(`店铺"${newStore.name}"创建成功，已自动选中`, "success", 4000);
+  };
   openModal({
     title: "选择导入店铺",
     width: 640,
     bodyHtml: `
-      <div style="font-size:12px;color:var(--text-light);line-height:1.7;margin-bottom:10px">请选择本次导入数据所属的店铺。确认后才能选择文件并继续导入。</div>
-      <div><label>搜索店铺</label>
-        <input id="sp-search" placeholder="搜索店铺名称 / 归属成员" autocomplete="off"></div>
-      <div style="margin-top:10px"><label>选择店铺（必选，同名店铺凭店铺 ID 区分）</label>
-        <div class="member-pick-list" id="sp-list"></div>
-        <span class="field-err" id="sp-err" style="display:none"></span></div>
-      <div class="store-info-bar sp-selected" id="sp-selected" style="display:none;margin-top:12px"></div>`,
+      <div class="file-info-bar file-info-bar--inline">当前文件：<b>${esc(fileInfo ? fileInfo.name : "")}</b> · ${typeLabel}</div>
+      <div id="sp-content">${listContentHtml}</div>`,
     actions: [
       { text: "取消", kind: "secondary", onClick: () => {} },
-      { text: "确认并选择文件", kind: "primary", disabled: true, onClick: () => {
+      { text: "+ 新建店铺", kind: "secondary", onClick: () => {
+          openCreateStoreForm(taskType, fileInfo, onCreated, restoreListView);
+          return false;
+        } },
+      { text: "确认选择", kind: "primary", disabled: true, onClick: () => {
           if (!selected) {
             fieldErr("请先选择目标店铺");
             return false;
@@ -339,45 +416,117 @@ async function openStorePicker(taskType) {
             owner_user_id: selected.owner_user_id,
             owner_username: selected.owner_username,
           };
-          const inputId = taskType === "wechat_orders" ? "file-wechat" : "file-supplier";
-          const input = document.getElementById(inputId);
-          if (input) input.click();
+          if (fileInfo && fileInfo.file) {
+            doUpload(fileInfo.file, uploadTask.store);
+          }
           return true;
         } },
     ],
     onClose: () => { if (!uploadTask || !uploadTask.store) uploadTask = null; },
   });
-  document.getElementById("sp-search").oninput = e => renderList(e.target.value);
+  restoreListEvents();
   await loadStores();
+}
+
+/* 弹窗内新建店铺表单（TASK-401~404）：member 自建归属本人，admin 代建选归属成员 */
+function openCreateStoreForm(taskType, fileInfo, onCreated, onBack) {
+  const content = document.getElementById("sp-content");
+  if (!content) return;
+  const ownerHtml = IS_ADMIN
+    ? `<div style="margin-top:10px"><label>归属成员（必选）</label>
+         <div class="member-pick-list" id="ns-owner-list"></div>
+         <span class="field-err" id="ns-owner-err" style="display:none"></span></div>`
+    : `<div style="margin-top:10px;padding:10px;background:var(--bg-light);border-radius:6px;font-size:13px;color:var(--text-light)">新店铺将归属您本人</div>`;
+  content.innerHTML = `
+    <div style="font-size:13px;font-weight:600;margin-bottom:10px">新建店铺</div>
+    <div><label>店铺名称（1-64 字符）</label>
+      <input id="ns-name" maxlength="64" placeholder="请输入店铺名称" autocomplete="off">
+      <span class="field-err" id="ns-name-err" style="display:none"></span></div>
+    ${ownerHtml}
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn secondary" id="ns-back" type="button">返回列表</button>
+      <button class="btn" id="ns-submit" type="button">创建店铺</button>
+    </div>`;
+  const showErr = (el, msg) => { if (el) { el.textContent = msg || ""; el.style.display = msg ? "block" : "none"; } };
+  const nameErr = document.getElementById("ns-name-err");
+  document.getElementById("ns-back").onclick = () => { if (onBack) onBack(); };
+  let selectedOwner = null;
+  if (IS_ADMIN) {
+    const ownerList = document.getElementById("ns-owner-list");
+    const ownerErr = document.getElementById("ns-owner-err");
+    ownerList.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载成员列表…</div>`;
+    API.get("/api/users?role=member&status=active").then(data => {
+      const users = (data && data.users) || [];
+      if (!users.length) {
+        ownerList.innerHTML = `<div style="padding:12px;text-align:center;color:var(--text-light);font-size:13px">无可用成员</div>`;
+        return;
+      }
+      ownerList.innerHTML = users.map(u => `
+        <label class="mp-item">
+          <input type="radio" name="ns-owner" value="${esc(u.user_id)}">
+          <span class="mp-name"><b>${esc(u.username)}</b></span>
+          <span class="mp-id">${esc(u.user_id)}</span>
+        </label>`).join("");
+      ownerList.querySelectorAll('input[name="ns-owner"]').forEach(r => {
+        r.onchange = () => {
+          selectedOwner = users.find(u => u.user_id === r.value) || null;
+          ownerList.querySelectorAll(".mp-item").forEach(item =>
+            item.classList.toggle("picked", item.contains(r)));
+          showErr(ownerErr, "");
+        };
+      });
+    }).catch(e => {
+      ownerList.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div></div>`;
+    });
+  }
+  document.getElementById("ns-submit").onclick = async function () {
+    const name = document.getElementById("ns-name").value.trim();
+    if (!name) { showErr(nameErr, "请输入店铺名称"); return; }
+    this.disabled = true; this.textContent = "创建中…";
+    try {
+      const body = { name };
+      if (IS_ADMIN) {
+        if (!selectedOwner) { showErr(document.getElementById("ns-owner-err"), "请选择归属成员"); this.disabled = false; this.textContent = "创建店铺"; return; }
+        body.owner_user_id = selectedOwner.user_id;
+      }
+      const newStore = await API.post("/api/stores", body);
+      toast(`店铺"${newStore.name}"创建成功`, "success", 3000);
+      if (onCreated) await onCreated(newStore);
+    } catch (e) {
+      showErr(nameErr, e.message || "创建失败");
+    } finally {
+      this.disabled = false; this.textContent = "创建店铺";
+    }
+  };
 }
 
 function bindUpload(zoneId, inputId, taskType) {
   const zone = document.getElementById(zoneId);
   const input = document.getElementById(inputId);
-  zone.onclick = () => openStorePicker(taskType);
+  zone.onclick = () => input.click();
   zone.ondragover = e => { e.preventDefault(); zone.classList.add("drag"); };
   zone.ondragleave = () => zone.classList.remove("drag");
   zone.ondrop = e => {
     e.preventDefault(); zone.classList.remove("drag");
-    /* 拖拽路径同样先弹窗选店，不保留拖入文件 */
-    openStorePicker(taskType);
+    if (e.dataTransfer.files.length) handleFileSelected(taskType, e.dataTransfer.files[0]);
   };
   input.onchange = () => {
-    if (input.files.length && uploadTask && uploadTask.store) doUpload(input.files[0]);
+    if (input.files.length) handleFileSelected(taskType, input.files[0]);
     input.value = "";
   };
 }
 
-async function doUpload(file) {
-  if (!file.name.toLowerCase().endsWith(".xlsx")) { toast("仅支持 .xlsx 文件", "error"); return; }
-  if (!uploadTask || !uploadTask.store) {
+async function doUpload(file, store) {
+  if (!/\.(xlsx|xls)$/i.test(file.name)) { toast("仅支持 .xlsx 或 .xls 文件", "error"); return; }
+  if (!store) {
     toast("请先选择目标店铺", "error", 4000);
     return;
   }
   toast(`正在解析 ${file.name} …`, "info", 1500);
   try {
-    const target = `?store_id=${encodeURIComponent(uploadTask.store.store_id)}`;
-    const data = await API.upload(uploadTask.apiPath + target, file);
+    const apiPath = IMPORT_API_PATHS[uploadTask ? uploadTask.type : "wechat_orders"];
+    const target = `?store_id=${encodeURIComponent(store.store_id)}`;
+    const data = await API.upload(apiPath + target, file);
     pendingPreview = data;
     showPreview(data);
   } catch (e) {
@@ -388,14 +537,71 @@ async function doUpload(file) {
   }
 }
 
+/* 文件选择后编排：precheck 校验 → 显示文件信息 → 弹出店铺选择弹窗 */
+async function handleFileSelected(taskType, file) {
+  if (!/\.(xlsx|xls)$/i.test(file.name)) { toast("仅支持 .xlsx 或 .xls 文件", "error"); return; }
+  uploadTask = { type: taskType, apiPath: IMPORT_API_PATHS[taskType], store: null, fileInfo: null };
+  showFileInfoLoading(file.name);
+  try {
+    const data = await API.upload("/api/import/precheck?source_type=" + taskType, file);
+    uploadTask.fileInfo = {
+      file: file, name: data.file_name, size: data.file_size, type: "xlsx",
+      hash: data.file_hash, source_type: data.source_type,
+      sheets: data.sheets, readable: data.readable, checkStatus: "checked",
+    };
+    renderFileInfo(uploadTask.fileInfo);
+    openStorePicker(taskType, uploadTask.fileInfo);
+  } catch (e) {
+    showFileInfoError(file.name, e.message || "文件校验失败");
+    uploadTask = null;
+  }
+}
+
+function renderFileInfo(info) {
+  const bar = document.getElementById("file-info-bar");
+  if (!bar) return;
+  bar.hidden = false;
+  const sizeStr = info.size < 1024 ? `${info.size} B` : `${(info.size / 1024).toFixed(1)} KB`;
+  const typeLabel = info.source_type === "wechat_orders" ? "微信订单" : "供应商成本";
+  document.getElementById("fi-meta").innerHTML = [
+    ["文件名", info.name], ["文件大小", sizeStr], ["数据类型", typeLabel],
+  ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${esc(v ?? "—")}</div></div>`).join("");
+  document.getElementById("fi-sheets").innerHTML = (info.sheets || []).length
+    ? `<div style="margin-top:8px;font-size:13px">工作表：${info.sheets.map(s => `<span class="tag">${esc(s)}</span>`).join(" ")}</div>`
+    : "";
+  document.getElementById("fi-status").innerHTML = `<div style="margin-top:6px;font-size:13px;color:var(--success)">✓ 文件校验通过</div>`;
+}
+
+function clearFileInfo() {
+  const bar = document.getElementById("file-info-bar");
+  if (bar) bar.hidden = true;
+}
+
+function showFileInfoLoading(name) {
+  const bar = document.getElementById("file-info-bar");
+  if (!bar) return;
+  bar.hidden = false;
+  document.getElementById("fi-meta").innerHTML = `<div class="kv"><div class="k">文件名</div><div class="v">${esc(name)}</div></div>`;
+  document.getElementById("fi-sheets").innerHTML = "";
+  document.getElementById("fi-status").innerHTML = `<div style="margin-top:6px;font-size:13px"><div class="spinner" style="display:inline-block;width:14px;height:14px;vertical-align:middle"></div> 正在校验文件…</div>`;
+}
+
+function showFileInfoError(name, msg) {
+  const bar = document.getElementById("file-info-bar");
+  if (!bar) return;
+  bar.hidden = false;
+  document.getElementById("fi-meta").innerHTML = `<div class="kv"><div class="k">文件名</div><div class="v">${esc(name)}</div></div>`;
+  document.getElementById("fi-sheets").innerHTML = "";
+  document.getElementById("fi-status").innerHTML = `<div style="margin-top:6px;font-size:13px;color:var(--danger)">✗ ${esc(msg)}</div>`;
+}
+
 function showPreview(p) {
   document.getElementById("pv-file").innerHTML = [
     ["目标店铺", p.target_store_name],
-    ["目标店铺 ID", p.target_store_id],
     ["归属成员", p.target_owner_username],
     ["文件名", p.file_name], ["数据类型", p.source_type === "wechat_orders" ? "微信订单" : "供应商成本"],
     ["工作表", `${p.selected_sheet}（表头第 ${p.header_row} 行）`],
-    ["文件大小", `${(p.file_size / 1024).toFixed(1)} KB`], ["文件摘要", p.file_hash.slice(0, 16) + "…"],
+    ["文件大小", `${(p.file_size / 1024).toFixed(1)} KB`],
   ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${esc(v ?? "—")}</div></div>`).join("");
 
   const mapped = new Set(Object.values(p.mapping || {}));
@@ -408,7 +614,9 @@ function showPreview(p) {
   document.getElementById("pv-stats").innerHTML = [
     ["总行数", pc.total_rows], ["可导入", `<span style="color:var(--success)">${pc.success_rows}</span>`],
     ["更新", pc.updated_rows], ["文件内重复", pc.duplicate_rows],
-    ["跳过空行", pc.skipped_rows], ["失败行", `<span style="color:var(--danger)">${pc.error_rows}</span>`],
+    ["跳过空行", pc.skipped_rows - (pc.excluded_unshipped_rows || 0)],
+    ["剔除未发货", pc.excluded_unshipped_rows || 0],
+    ["失败行", `<span style="color:var(--danger)">${pc.error_rows}</span>`],
     ["警告行", `<span style="color:var(--warning)">${pc.warning_rows}</span>`],
   ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${v ?? 0}</div></div>`).join("");
 
@@ -493,10 +701,10 @@ async function loadBatches() {
         <td>${esc(b.file_name)}</td>
         ${storeCell}
         <td>${esc(b.imported_at)}</td>
+        <td>${esc(b.imported_by || "—")}</td>
         <td><span class="badge ${st[1]}">${st[0]}</span></td>
         <td class="num">${s.total_rows ?? 0}</td><td class="num">${s.success_rows ?? 0}</td>
-        <td class="num">${s.updated_rows ?? 0}</td><td class="num">${s.skipped_rows ?? 0}</td>
-        <td class="num">${s.duplicate_rows ?? 0}</td><td class="num">${s.error_rows ?? 0}</td>
+        <td class="num">${s.error_rows ?? 0}</td><td class="num" title="更新${s.updated_rows ?? 0}·跳过${s.skipped_rows ?? 0}·重复${s.duplicate_rows ?? 0}">${(s.updated_rows ?? 0) + (s.skipped_rows ?? 0) + (s.duplicate_rows ?? 0)}</td>
         <td class="col-op"><button class="link-btn" onclick="showRows('${esc(b.batch_id)}')">明细</button>
              <button class="link-btn" onclick="exportErrors('${esc(b.batch_id)}')">异常清单</button>${adminOps}</td>
       </tr>`;
@@ -654,6 +862,25 @@ document.getElementById("btn-reset-batches").onclick = () => {
 document.getElementById("f-keyword").addEventListener("keydown", e => {
   if (e.key === "Enter") { BATCH_STATE.page = 1; loadBatches(); }
 });
+
+document.getElementById("fi-change").onclick = () => {
+  const inputId = uploadTask && uploadTask.type === "supplier_cost" ? "file-supplier" : "file-wechat";
+  const input = document.getElementById(inputId);
+  if (input) input.click();
+};
+document.getElementById("fi-cancel").onclick = () => {
+  clearFileInfo();
+  if (uploadTask && uploadTask.store) {
+    toast("文件导入尚未完成，已创建的店铺已保留", "info", 5000);
+  }
+  uploadTask = null;
+};
+document.getElementById("pv-back-store").onclick = function () {
+  closePreview();
+  if (uploadTask && uploadTask.fileInfo) {
+    openStorePicker(uploadTask.type, uploadTask.fileInfo);
+  }
+};
 
 bindUpload("zone-wechat", "file-wechat", "wechat_orders");
 bindUpload("zone-supplier", "file-supplier", "supplier_cost");

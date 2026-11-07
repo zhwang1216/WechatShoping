@@ -2,43 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>普通订单 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<aside class="app-sidebar" id="app-sidebar">
-  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>
-  <nav>
-    <a href="/dashboard">经营总览</a>
-    <a href="/data-import">数据导入</a>
-    <a href="/orders" class="active">普通订单</a>
-    <a href="/refund-orders">退款订单</a>
-    <a href="/refund-details">退款明细</a>
-    <a href="/supplier-costs">供应商成本</a>
-    <a href="/reconciliation">对账成本</a>
-    <a href="/profit">利润核算</a>
-    <a href="/anomalies">异常处理</a>
-    <a href="/logs">操作日志</a>
-    <!--admin-nav-start-->
-    <button type="button" class="nav-group" data-nav-group="user-mgmt"
-            aria-expanded="true" aria-controls="nav-user-mgmt">管理用户</button>
-    <div class="nav-submenu" id="nav-user-mgmt">
-      <a href="/users/create">创建用户</a>
-      <a href="/stores">店铺管理</a>
-      <a href="/users">用户管理</a>
-    </div>
-    <!--admin-nav-end-->
-  </nav>
-  <button class="sidebar-collapse-btn" id="sidebar-collapse" type="button" aria-label="收起或展开侧边菜单"><span class="toggle-arrow">«</span><span class="toggle-text">收起菜单</span></button>
-</aside>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
-<div class="app-main">
-<header class="topbar">
-  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>
-  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>
-  <div id="auth-area" class="auth-area"></div>
-</header>
-<div class="container">
+<!--@app-shell-->
   <div class="page-title">普通订单</div>
   <div class="page-desc">默认只展示无任何退款记录的订单；存在退款的订单请前往「退款订单」页面。月份筛选按订单下单时间归属（左闭右开区间）。</div>
 
@@ -94,200 +63,76 @@
   </div>
 </div>
 
-<!-- 订单详情模态 -->
-<div class="modal-mask" id="detail-modal">
-  <div class="modal">
-    <div class="modal-head"><h3 id="detail-title">订单详情</h3><button class="modal-close" onclick="closeDetail()">×</button></div>
-    <div class="modal-body" id="detail-body"></div>
-  </div>
-</div>
-
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/common_table.js"></script>
+<script src="/static/list_page.js"></script>
+<script src="/static/modal.js"></script>
+<script src="/static/order_detail.js"></script>
 <script src="/static/auth_nav.js"></script>
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
 <script src="/static/store_scope.js"></script>
 <script>
-const STATE = { page: 1, size: 50 };
+/* 订单状态选项统一来自 api.js 的 ORDER_STATUS_META，避免状态文案两处维护 */
+document.getElementById("f-status").innerHTML += Object.entries(ORDER_STATUS_META)
+  .map(([value, meta]) => `<option value="${value}">${esc(meta[0])}</option>`).join("");
 
-const MF = new MonthFilter({
-  container: "month-filter",
+const ORDERS_PAGE = new ListPage({
+  tableId: "orders-table",
+  url: "/api/orders",
+  itemsKey: "orders",
+  rowKey: "order_id",
+  pageSize: 50,
   timeLabel: "订单下单时间",
-  onChange: () => { STATE.page = 1; load(); },
-});
-
-const SS = new StoreScope({
-  container: "store-scope",
-  onChange: () => { STATE.page = 1; load(); },
-});
-
-const STATUS_OPTIONS = {
-  completed: "已完成", shipped: "已发货", pending_shipment: "待发货",
-  paid: "已支付", pending_payment: "待付款", closed: "已关闭",
-  refund_processing: "退款处理中", partial_refunded: "部分退款",
-  full_refunded: "全额退款", unknown: "未知状态",
-};
-document.getElementById("f-status").innerHTML += Object.entries(STATUS_OPTIONS)
-  .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-
-function queryStr() {
-  const p = new URLSearchParams();
-  p.set("page", STATE.page); p.set("page_size", STATE.size);
-  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
-  SS.appendTo(p);
-  const v = id => document.getElementById(id).value.trim();
-  if (v("f-order-id")) p.set("order_id", v("f-order-id"));
-  if (v("f-keyword")) p.set("keyword", v("f-keyword"));
-  if (v("f-status")) p.set("status", v("f-status"));
-  p.set("order_by", v("f-order-by")); p.set("order_dir", v("f-order-dir"));
-  return p.toString();
-}
-
-async function load() {
-  const state = document.getElementById("table-state");
-  const tbody = document.querySelector("#orders-table tbody");
-  state.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
-  tbody.innerHTML = "";
-  try {
-    const data = await API.get(`/api/orders?${queryStr()}`);
-    renderStats(data.statistics);
-    state.innerHTML = "";
-    if (!data.orders.length) {
-      state.innerHTML = `<div class="empty-state"><div class="icon">📋</div>暂无数据：当前筛选条件下没有普通订单<br><span style="font-size:12px">可先在「数据导入」页导入微信订单 Excel</span></div>`;
-    } else {
-      tbody.innerHTML = data.orders.map(r => `<tr>
-        <td>${esc(r.order_id)}</td>
-        <td>${fmtTime(r.order_time)}</td>
-        <td>${orderStatusBadge(r.order_status)}</td>
-        <td class="num">${fmtMoney(r.amounts.actual_paid_amount)}</td>
-        <td class="num">${fmtMoney(r.amounts.actual_received_amount)}</td>
-        <td class="num">${fmtMoney(r.amounts.technical_service_fee)}</td>
-        <td class="num">${fmtMoney(r.amounts.product_total)}</td>
-        <td class="num">${r.product_quantity_total}</td>
-        <td style="max-width:260px;white-space:normal">${esc(r.product_summary)}</td>
-        <td title="${esc(r.batch_ids.join(", "))}">${r.batch_ids.length} 个批次</td>
-        <td class="col-op"><button class="link-btn" onclick="showDetail('${esc(r.order_id)}')">详情</button></td>
-      </tr>`).join("");
-    }
-    document.getElementById("table-hint").textContent = data.total ? `第 ${data.page}/${data.pages} 页` : "";
-    renderPager(document.getElementById("pager"), data, {
-      onPage: p => { STATE.page = p; load(); },
-      onSize: s => { STATE.size = s; STATE.page = 1; load(); },
-    });
-  } catch (e) {
-    state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败，请稍后重试")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
-    renderStats(null);
-  }
-}
-
-function renderStats(s) {
-  const el = document.getElementById("stat-grid");
-  if (!s) { el.innerHTML = ""; return; }
-  el.innerHTML = [
+  exportUrl: "/api/orders/export",
+  filters: [
+    { id: "f-order-id", param: "order_id" },
+    { id: "f-keyword", param: "keyword" },
+    { id: "f-status", param: "status" },
+    { id: "f-order-by", param: "order_by", always: true, reset: "order_time" },
+    { id: "f-order-dir", param: "order_dir", always: true, reset: "desc" },
+  ],
+  columns: [
+    { title: "订单号", render: r =>
+      `<span class="copyable" title="点击复制" data-copy="${esc(r.order_id)}">${esc(r.order_id)}</span>` },
+    { title: "下单时间", render: r => fmtTime(r.order_time) },
+    { title: "订单状态", render: r => orderStatusBadge(r.order_status) },
+    { title: "实际支付", align: "right", render: r => fmtMoney(r.amounts.actual_paid_amount) },
+    { title: "实际收款", align: "right", render: r => fmtMoney(r.amounts.actual_received_amount) },
+    { title: "技术服务费", align: "right", render: r => fmtMoney(r.amounts.technical_service_fee) },
+    { title: "商品总价", align: "right", render: r => fmtMoney(r.amounts.product_total) },
+    { title: "数量", align: "right", render: r => r.product_quantity_total },
+    { title: "商品明细", render: r =>
+      `<span style="display:block;max-width:260px;white-space:normal">${esc(r.product_summary)}</span>` },
+    { title: "导入批次", render: r => {
+      const ids = r.batch_ids || [];
+      return `<span title="${esc(ids.join(", "))}">${ids.length} 个批次</span>`;
+    } },
+    { title: "操作", fixed: true, render: r =>
+      `<button class="link-btn" type="button" data-detail="${esc(r.order_id)}">详情</button>` },
+  ],
+  stats: s => s ? renderStatCards(null, [
     ["订单数（去重）", s.order_count, ""],
     ["商品销售额", fmtMoneyYuan(s.product_total_sum), ""],
     ["实际支付金额", fmtMoneyYuan(s.actual_paid_total), ""],
     ["实际收款金额", fmtMoneyYuan(s.actual_received_total), ""],
     ["技术服务费", fmtMoneyYuan(s.technical_service_fee_total), "warn"],
     ["商品总数量", s.quantity_total, ""],
-  ].map(([l, v, c]) => `<div class="stat-item"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("");
-}
-
-async function showDetail(orderId) {
-  const body = document.getElementById("detail-body");
-  document.getElementById("detail-title").textContent = `订单详情：${orderId}`;
-  body.innerHTML = `<div class="loading-state"><div class="spinner"></div>加载中…</div>`;
-  document.getElementById("detail-modal").classList.add("show");
-  try {
-    const d = await API.get(`/api/orders/${encodeURIComponent(orderId)}`);
-    renderDetail(d);
-  } catch (e) {
-    body.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "加载失败")}</div></div>`;
-  }
-}
-function closeDetail() { document.getElementById("detail-modal").classList.remove("show"); }
-
-function renderDetail(d) {
-  const body = document.getElementById("detail-body");
-  const a = d.amounts;
-  const html = `
-    <div class="detail-section"><h4>订单汇总</h4>
-      <div class="kv-grid">
-        ${[
-          ["订单号", d.order_id], ["下单时间", fmtTime(d.order_time)],
-          ["订单状态", ""], ["原始状态", d.source_status || "—"],
-          ["实际支付金额", fmtMoneyYuan(a.actual_paid_amount)],
-          ["实际收款金额", fmtMoneyYuan(a.actual_received_amount)],
-          ["技术服务费", fmtMoneyYuan(a.technical_service_fee)],
-          ["商品总价", fmtMoneyYuan(a.product_total)],
-          ["商品行数", d.product_line_count],
-          ["是否有退款", d.has_refund ? "是（见退款明细）" : "否"],
-          ["订单级金额冲突", d.amount_conflict ? "是（多行不同值，已取唯一值并生成异常）" : "否"],
-        ].map(([k, v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${typeof v === "string" && v.includes('badge') ? v : esc(v)}</div></div>`).join("")
-          .replace('订单状态</div><div class="v"></div>', `订单状态</div><div class="v">${orderStatusBadge(d.order_status)}</div>`)}
-      </div>
-    </div>
-    <div class="detail-section"><h4>商品行明细（${d.lines.length} 行）</h4>
-      <div class="table-wrap"><table>
-        <thead><tr><th>商品标题</th><th>规格</th><th>SKU</th><th class="num">数量</th><th class="num">实际总价</th><th>退款状态</th><th>源表行号</th></tr></thead>
-        <tbody>${d.lines.map(l => `<tr>
-          <td>${esc(l.product.title || "—")}</td><td>${esc(l.product.sku_attribute || "—")}</td>
-          <td>${esc(l.product.sku_code || "—")}</td><td class="num">${l.product.quantity}</td>
-          <td class="num">${fmtMoney(l.product.actual_total_price)}</td>
-          <td>${refundStatusBadge(l.refund.refund_status)} ${statusSourceBadge(l.refund.status_source)}</td>
-          <td>${l.source_record_id ? "可追溯" : "—"}</td>
-        </tr>`).join("")}</tbody>
-      </table></div>
-    </div>
-    <div class="detail-section"><h4>退款记录（逐笔，${d.refunds.length} 笔）</h4>
-      ${d.refunds.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>#</th><th class="num">退款金额</th><th>退款状态</th><th>状态来源</th><th>退款时间</th><th>源工作表/行号</th><th>导入批次</th></tr></thead>
-        <tbody>${d.refunds.map((r, i) => `<tr>
-          <td>${i + 1}</td><td class="num">${fmtMoneyYuan(r.refund_amount)}</td>
-          <td>${refundStatusBadge(r.refund_status)}</td><td>${statusSourceBadge(r.status_source)}</td>
-          <td>${fmtTime(r.refund_time)}</td>
-          <td>${esc(r.sheet_name || "—")} 第 ${r.row_number} 行</td>
-          <td style="font-size:12px">${esc(r.batch_id || "—")}</td>
-        </tr>`).join("")}</tbody>
-      </table></div>
-      ${d.refund_view ? `<div style="margin-top:8px;color:var(--text-light);font-size:13px">
-        退款汇总（按订单去重）：总额 ${fmtMoneyYuan(d.refund_view.refund.refund_amount)}，
-        成功 ${fmtMoneyYuan(d.refund_view.refund_by_status.success)}，
-        处理中 ${fmtMoneyYuan(d.refund_view.refund_by_status.pending)}，
-        关闭 ${fmtMoneyYuan(d.refund_view.refund_by_status.closed)}，
-        粒度 ${d.refund_view.refund.refund_amount_granularity === "unknown" ? "待核对" : "商品行级"}
-      </div>` : ""}` :
-      `<div style="color:var(--text-light)">该订单无退款记录</div>`}
-    </div>
-    <div class="detail-section"><h4>数据溯源</h4>
-      ${d.batches.map(b => `<div class="kv-grid" style="margin-bottom:8px">
-        <div class="kv"><div class="k">导入批次</div><div class="v">${esc(b.batch_id)}</div></div>
-        <div class="kv"><div class="k">源文件</div><div class="v">${esc(b.file_name)}</div></div>
-        <div class="kv"><div class="k">导入时间</div><div class="v">${esc(b.imported_at)}</div></div>
-      </div>`).join("") || `<div style="color:var(--text-light)">无批次信息</div>`}
-    </div>`;
-  body.innerHTML = html;
-}
-
-document.getElementById("btn-query").onclick = () => { STATE.page = 1; load(); };
-document.getElementById("btn-reset").onclick = () => {
-  ["f-order-id", "f-keyword", "f-status"].forEach(id => document.getElementById(id).value = "");
-  document.getElementById("f-order-by").value = "order_time";
-  document.getElementById("f-order-dir").value = "desc";
-  STATE.page = 1;
-  MF.reset();
-};
-document.getElementById("btn-export").onclick = () => {
-  window.open(`/api/orders/export?${queryStr()}`);
-  toast("导出文件生成中…", "info");
-};
-["f-order-id", "f-keyword"].forEach(id =>
-  document.getElementById(id).addEventListener("keydown", e => { if (e.key === "Enter") { STATE.page = 1; load(); } }));
-document.querySelector(".filter-grid").addEventListener("change", e => {
-  if (e.target.matches("select")) { STATE.page = 1; load(); }
+  ]) : "",
+  emptyHtml: mf =>
+    `<div class="empty-state"><div class="icon">📋</div>当前筛选（${esc(mf.getLabel())}）内没有普通订单<br>
+     <span style="font-size:12px">可先在「数据导入」页导入微信订单 Excel，或切换月份/选择「全部」</span></div>`,
 });
-load();
+
+document.querySelector("#orders-table tbody").addEventListener("click", e => {
+  const detail = e.target.closest("[data-detail]");
+  if (detail) { openOrderDetail(detail.dataset.detail, { mode: "order" }); return; }
+  const copy = e.target.closest("[data-copy]");
+  if (copy) copyText(copy.dataset.copy);
+});
+
+ORDERS_PAGE.reload();
 </script>
 </body>
 </html>

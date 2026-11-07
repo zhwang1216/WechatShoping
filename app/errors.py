@@ -86,6 +86,27 @@ class ManualMatchConflictError(ReconcileServiceError):
         super().__init__(message, code=3003, http_status=409, data=data)
 
 
+class ModifyRejectedError(ReconcileServiceError):
+    """已匹配订单拒绝人工修改"""
+
+    def __init__(self, message, data=None):
+        super().__init__(message, code=3004, http_status=403, data=data)
+
+
+class FieldNotModifiableError(ReconcileServiceError):
+    """字段为系统关键字段不可修改"""
+
+    def __init__(self, message, data=None):
+        super().__init__(message, code=3005, http_status=400, data=data)
+
+
+class InvalidFieldValueError(ReconcileServiceError):
+    """字段值格式非法"""
+
+    def __init__(self, message, data=None):
+        super().__init__(message, code=3006, http_status=400, data=data)
+
+
 class ProfitServiceError(Exception):
     """利润核算服务统一异常"""
 

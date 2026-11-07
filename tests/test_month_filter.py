@@ -254,24 +254,12 @@ class TestMonthFilter(unittest.TestCase):
             Decimal(data["statistics"]["success_refund_amount_by_success_time"]),
             Decimal("0"))
 
-    def test_refund_details_month_filter(self):
-        data = self._data("/api/refund-details?month=2026-10")
-        self.assertEqual(data["total"], 2)
-        self.assertEqual(Decimal(data["statistics"]["total_refund_amount"]),
-                         Decimal("76.60"))
-        # 退款时间为空的记录：月份筛选时排除
-        data = self._data("/api/refund-details?month=2026-09")
-        self.assertEqual(data["total"], 0)
-        # 全部：含退款时间缺失的 3 条
-        data = self._data("/api/refund-details")
-        self.assertEqual(data["total"], 3)
 
     # ---------- 3. 空月份 ----------
     def test_empty_month_returns_empty_everywhere(self):
         for path in (
             "/api/orders?month=2025-01",
             "/api/refund-orders?month=2025-01",
-            "/api/refund-details?month=2025-01",
             "/api/supplier-costs?month=2025-01",
             "/api/anomalies?month=2025-01",
             "/api/import/batches?month=2025-01",
@@ -439,8 +427,6 @@ class TestMonthFilter(unittest.TestCase):
         status, _ = self._get("/api/refund-orders?time_field=nope")
         self.assertEqual(status, 400)
         status, _ = self._get("/api/supplier-costs?time_field=nope")
-        self.assertEqual(status, 400)
-        status, _ = self._get("/api/refund-details?time_field=nope")
         self.assertEqual(status, 400)
 
 

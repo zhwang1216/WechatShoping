@@ -19,7 +19,9 @@ WechatShopping/
 │   ├── data_schemas.py  # 业务 JSON 文件定义与初始数据
 │   ├── json_repository.py # JSON 数据仓库（原子写入/备份/恢复/文件锁）
 │   ├── operation_log.py # 操作日志（JSONL）
+│   ├── page_shell.py    # 统一应用外壳（侧边栏/顶栏）注入
 │   └── server.py        # 本地 HTTP 服务
+├── static/              # 页面与公共前端组件（list_page/order_detail/modal 等）
 ├── data/                # 业务 JSON 数据（自动生成）
 ├── backups/             # 自动/手动备份（自动生成）
 ├── logs/                # 服务输出与操作日志（自动生成）
@@ -106,3 +108,26 @@ python3 -m unittest discover -s tests -v
 ```
 
 测试覆盖：统一响应格式、操作日志、JSON 仓库读写/原子性/备份/恢复/文件锁/损坏自愈、HTTP 服务健康检查与各接口（含模拟写入失败时旧文件不损坏）。
+
+## 前端页面复用
+
+为避免各页面重复维护同一套结构，前端按职责拆为公共组件，页面只保留业务配置：
+
+- **应用外壳**：侧边栏/顶栏由 `app/page_shell.py` 统一生成，页面内只写 `<!--@app-shell-->`，服务端按当前路由注入并高亮菜单；管理员菜单标记块仍在服务端按会话剔除。
+- **列表页**：`static/list_page.js` 收敛月份/成员/店铺筛选、查询参数、分页、统计卡片、导出、重置、空/错误态；`static/common_table.js` 负责表体渲染与分页控件。订单、退款订单、供应商成本、异常处理、操作日志均已接入。
+- **订单详情**：普通订单与退款订单共用 `static/order_detail.js`，统一通过 `static/modal.js` 的右侧抽屉展示，不再各自维护详情弹窗。
+- **认证页**：登录、注册、系统初始化共用 `style.css` 中的 `.auth-*` 卡片/表单样式。
+- **公共样式**：利润正负色、统计卡片副标题、统计口径说明等已抽到 `style.css`，页面不再内联重复定义。
+
+修改导航、列表行为或详情结构时，优先改上述公共文件，避免再次出现多页复制。
+
+## 打包发布
+
+将系统打包为 Windows 独立可执行程序（.exe），无需安装 Python 即可双击运行：
+
+```bash
+python build/build_exe.py          # 默认单目录模式
+python build/build_exe.py --mode onefile  # 单文件模式
+```
+
+产物位于 `dist/` 目录，部署与异常排查详见 [build/README.md](build/README.md)。

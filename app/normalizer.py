@@ -30,6 +30,12 @@ ORDER_STATUS_MAP = {
     "已全额退款": "full_refunded", "全额退款": "full_refunded",
 }
 
+SHIP_STATUS_MAP = {
+    "未发货": "unshipped",
+    "已发货": "shipped",
+    "部分发货": "partial_shipped",
+}
+
 
 def clean_text(value):
     """去首尾空格与不可见字符；空值返回 None"""
@@ -109,6 +115,21 @@ def normalize_order_status(raw):
     if not s:
         return "unknown", False
     std = ORDER_STATUS_MAP.get(s)
+    if std:
+        return std, True
+    return "unknown", False
+
+
+def normalize_ship_status(raw):
+    """商品发货状态标准化 -> (标准枚举|None, 是否已知)。
+
+    空值返回 (None, True) 表示字段缺失，不参与未发货判断（向后兼容历史数据）。
+    已知取值: 未发货->unshipped, 已发货->shipped, 部分发货->partial_shipped。
+    """
+    s = clean_text(raw)
+    if not s:
+        return None, True
+    std = SHIP_STATUS_MAP.get(s)
     if std:
         return std, True
     return "unknown", False
@@ -215,6 +236,16 @@ def build_wechat_order_line(cells):
         })
         issues.append("unknown_order_status")
 
+    source_ship_status = clean_text(cells.get("ship_status"))
+    std_ship_status, ship_known = normalize_ship_status(cells.get("ship_status"))
+    if source_ship_status and not ship_known:
+        warnings.append({
+            "type": "UNKNOWN_SHIP_STATUS",
+            "severity": "low",
+            "message": f"未知商品发货状态: {source_ship_status}",
+        })
+        issues.append("unknown_ship_status")
+
     quantity, qerr = parse_quantity(cells.get("product_quantity"), "商品数量")
     if qerr:
         errors.append({"type": "INVALID_QUANTITY", "message": qerr})
@@ -273,6 +304,8 @@ def build_wechat_order_line(cells):
         "order_time": order_time,
         "order_status": std_status,
         "source_status": source_status,
+        "ship_status": std_ship_status,
+        "source_ship_status": source_ship_status,
         "product": {
             "title": clean_text(cells.get("product_title")),
             "sku_attribute": clean_text(cells.get("sku_attribute")),

@@ -677,7 +677,7 @@ class TestStoreStatus(unittest.TestCase):
         st, r = self.admin.post(f"/api/stores/{self.s2}/status",
                                 {"action": "foo"})
         self.assertEqual(st, 400)
-        self.assertEqual(r["message"], "action 仅支持 disable / enable")
+        self.assertEqual(r["message"], "action 仅支持 disable / enable（归档功能已下线）")
         # archive 同样被拒（归档已下线）
         st, r = self.admin.post(f"/api/stores/{self.s2}/status",
                                 {"action": "archive"})
@@ -883,14 +883,17 @@ class TestAdminAllStoresExtension(unittest.TestCase):
         self.assertNotIn(self.s1, ids)
 
     def test_03_status_filter(self):
-        for status_kw, expect in (("disabled", {self.s2}),
-                                  ("archived", {self.s3})):
-            st, r = self.admin.get(
-                f"/api/admin/all-stores?status={status_kw}"
-                f"&page=1&page_size=100")
-            self.assertEqual(st, 200, status_kw)
-            self.assertEqual({s["store_id"] for s in r["data"]["stores"]},
-                             expect, status_kw)
+        # disabled 筛选仍 200（保留）
+        st, r = self.admin.get(
+            "/api/admin/all-stores?status=disabled&page=1&page_size=100")
+        self.assertEqual(st, 200)
+        self.assertEqual({s["store_id"] for s in r["data"]["stores"]},
+                         {self.s2, self.s3})
+        # 归档已下线 → archived 筛选预期 400
+        st, r = self.admin.get(
+            "/api/admin/all-stores?status=archived&page=1&page_size=100")
+        self.assertEqual(st, 400)
+        self.assertEqual(r["message"], "店铺状态仅支持 active / disabled")
         st, r = self.admin.get(
             "/api/admin/all-stores?status=active&page=1&page_size=100")
         ids = {s["store_id"] for s in r["data"]["stores"]}
@@ -934,7 +937,7 @@ class TestAdminAllStoresExtension(unittest.TestCase):
             "/api/admin/all-stores?status=foo&page=1&page_size=20")
         self.assertEqual(st, 400)
         self.assertEqual(r["message"],
-                         "店铺状态仅支持 active / disabled / archived")
+                         "店铺状态仅支持 active / disabled")
 
 
 class TestOneToManyOwnership(unittest.TestCase):
@@ -1088,14 +1091,15 @@ class TestStoreDelete(unittest.TestCase):
         store = _find_store(self.env, self.s2)
         self.assertIsNotNone(store)
         st, r = self.admin.post(f"/api/stores/{self.s2}/delete", {
-            "confirm_store_name": "删除空店"})
+            "confirm_store_name": "删除空店",
+            "confirm_acknowledged": True})  # 强确认双通道
         self.assertEqual(st, 200, r)
-        self.assertEqual(r["message"], "店铺已删除（整店快照已保留在备份目录）")
+        self.assertEqual(r["message"], "店铺已永久删除（含全部关联业务数据）")
         data = r["data"]
         self.assertEqual(data["store_id"], self.s2)
         self.assertEqual(data["name"], "删除空店")
         self.assertEqual(data["owner_username"], "del_a")
-        self.assertIsNotNone(data["backup_dir"])
+        self.assertIsNotNone(data["txn_id"])
         self.assertTrue(data["removed_store_dir"])
         # 两表移除 + 目录移除 + all-stores 不可见
         self.assertIsNone(_find_store(self.env, self.s2))
@@ -1108,43 +1112,47 @@ class TestStoreDelete(unittest.TestCase):
                          {s["store_id"] for s in r["data"]["stores"]})
 
     def test_02_has_trades_blocked(self):
+        # 删除前直读落盘记录数（用于 deleted_counts 比对）
+        orders_before = len(_read_business_records(self.env, self.s1, "orders"))
+        # 有数据店铺直接删除成功（归档下线 + 物理删除新契约）
         st, r = self.admin.post(f"/api/stores/{self.s1}/delete", {
-            "confirm_store_name": "删除有数据店"})
-        self.assertEqual(st, 400)
-        self.assertIn("历史交易数据", r["message"])
-        self.assertIn("订单", r["message"])
-        self.assertIn("已阻止删除", r["message"])
-        self.assertIn("清除店铺业务数据", r["message"])
-        # 记录与数据零变化
-        self.assertIsNotNone(_find_store(self.env, self.s1))
-        self.assertTrue(_store_dir_exists(self.env, self.s1))
+            "confirm_store_name": "删除有数据店",
+            "confirm_acknowledged": True})
+        self.assertEqual(st, 200, r)
+        self.assertEqual(r["data"]["deleted_counts"]["orders"], orders_before)
+        # 删除后店铺记录、目录、归属引用确不存在
+        self.assertIsNone(_find_store(self.env, self.s1))
+        self.assertFalse(_store_dir_exists(self.env, self.s1))
+        self.assertNotIn(self.s1, _find_user(self.env, "del_a")["store_ids"])
 
     def test_03_two_step_full_delete(self):
-        st, r = self.admin.post(f"/api/stores/{self.s1}/clear-data", {
-            "confirm_store_name": "删除有数据店"})
+        # test_02 已删除 self.s1，本用例新建临时店铺验证两步删除链路
+        st, r = self.admin.post("/api/stores", {
+            "name": "两步删除临时店", "owner_user_id": self.env.get_user_id("del_a")})
         self.assertEqual(st, 200, r)
-        # 第一步快照保留原始业务数据（第二步 delete 时店铺已清空）
+        tmp_sid = r["data"]["store_id"]
+        st, r = self.admin.post(f"/api/stores/{tmp_sid}/clear-data", {
+            "confirm_store_name": "两步删除临时店",
+            "confirm_acknowledged": True})
+        self.assertEqual(st, 200, r)
         clear_backup = r["data"]["backup_dir"]
         snap_orders = os.path.join(clear_backup, "data", "orders.json")
         self.assertTrue(os.path.exists(snap_orders))
-        with open(snap_orders, encoding="utf-8") as f:
-            self.assertGreater(len(json.load(f)["records"]), 0)
-        st, r = self.admin.post(f"/api/stores/{self.s1}/delete", {
-            "confirm_store_name": "删除有数据店"})
+        st, r = self.admin.post(f"/api/stores/{tmp_sid}/delete", {
+            "confirm_store_name": "两步删除临时店",
+            "confirm_acknowledged": True})
         self.assertEqual(st, 200, r)
-        # 记录与目录均移除, 删除备份留存（两表副本+已清空的整店快照）
-        self.assertIsNone(_find_store(self.env, self.s1))
-        self.assertFalse(_store_dir_exists(self.env, self.s1))
-        self.assertTrue(os.path.exists(os.path.join(
-            r["data"]["backup_dir"], "store_snapshot", "data",
-            "orders.json")))
-        self.assertNotIn(self.s1,
+        self.assertIsNone(_find_store(self.env, tmp_sid))
+        self.assertFalse(_store_dir_exists(self.env, tmp_sid))
+        self.assertIn("deleted_counts", r["data"])
+        self.assertNotIn(tmp_sid,
                          _find_user(self.env, "del_a")["store_ids"])
 
     def test_04_confirm_mismatch_rejected(self):
         for bad in ("错误名", "", None, "删除有数据店 "):
             st, r = self.admin.post(f"/api/stores/{self.s3}/delete", {
-                "confirm_store_name": bad})
+                "confirm_store_name": bad,
+                "confirm_acknowledged": True})
             self.assertEqual(st, 400, bad)
         self.assertIsNotNone(_find_store(self.env, self.s3))
 
@@ -1177,7 +1185,8 @@ class TestStoreDelete(unittest.TestCase):
                 side_effect=AuthError("删除失败，请重试",
                                       code=500, http_status=500)):
             st, r = self.admin.post(f"/api/stores/{self.s3}/delete", {
-                "confirm_store_name": "删除备用店"})
+                "confirm_store_name": "删除备用店",
+                "confirm_acknowledged": True})
         self.assertEqual(st, 500)
         # 两表与目录回到操作前, 备份目录不残留, 可重试
         self.assertEqual(len(_read_stores(self.env)), stores_before)
@@ -1188,9 +1197,15 @@ class TestStoreDelete(unittest.TestCase):
                          backups_before)
 
     def test_08_rmtree_failure_safe_state(self):
-        with mock.patch("shutil.rmtree", side_effect=OSError("denied")):
+        original_rmtree = shutil.rmtree
+        def mock_rmtree(*args, **kwargs):
+            if kwargs.get("ignore_errors"):
+                return original_rmtree(*args, **kwargs)
+            raise OSError("denied")
+        with mock.patch("shutil.rmtree", side_effect=mock_rmtree):
             st, r = self.admin.post(f"/api/stores/{self.s3}/delete", {
-                "confirm_store_name": "删除备用店"})
+                "confirm_store_name": "删除备用店",
+                "confirm_acknowledged": True})
         self.assertEqual(st, 200, r)
         # 记录已删（两表成功）; 目录残留属安全状态, 审计如实记录
         self.assertFalse(r["data"]["removed_store_dir"])
@@ -1211,7 +1226,7 @@ class TestStoreDelete(unittest.TestCase):
             self.assertEqual(e["username"], self.env.admin_user)
             self.assertIsNotNone(e["user_id"])
             self.assertIn("ip", e)
-            for key in ("store_id", "store_name", "backup_dir",
+            for key in ("store_id", "store_name", "txn_id",
                         "removed_store_dir", "revoked_sessions"):
                 self.assertIn(key, e["detail"])
 
@@ -1286,7 +1301,8 @@ class TestStoreClearData(unittest.TestCase):
             "暂存.xlsx", make_wx_xlsx("TMP"))
         self.assertEqual(st, 200, r)
         st, r = self.admin.post(f"/api/stores/{self.s1}/clear-data", {
-            "confirm_store_name": "清理数据店"})
+            "confirm_store_name": "清理数据店",
+            "confirm_acknowledged": True})
         self.assertEqual(st, 200, r)
         self.assertEqual(r["message"], "店铺业务数据已清除（已创建整店快照备份）")
         data = r["data"]
@@ -1347,9 +1363,10 @@ class TestStoreClearData(unittest.TestCase):
 
     def test_04_confirm_mismatch_rejected(self):
         st, r = self.admin.post(f"/api/stores/{self.s3}/clear-data", {
-            "confirm_store_name": "错误名称"})
+            "confirm_store_name": "错误名称",
+            "confirm_acknowledged": True})
         self.assertEqual(st, 400)
-        self.assertIn("确认不一致", r["message"])
+        self.assertIn("确认信息不一致", r["message"])
         self.assertGreater(
             len(_read_business_records(self.env, self.s3, "orders")), 0)
 
@@ -1367,7 +1384,8 @@ class TestStoreClearData(unittest.TestCase):
             _read_business_records(self.env, self.s4, "orders"))
         self.assertGreater(s4_orders_before, 0)
         st, r = self.admin.post(f"/api/stores/{self.s3}/clear-data", {
-            "confirm_store_name": "边界三店"})
+            "confirm_store_name": "边界三店",
+            "confirm_acknowledged": True})
         self.assertEqual(st, 200, r)
         # 单店接口只清 S3; 同成员 S4 数据不受影响
         self.assertEqual(
@@ -1385,7 +1403,8 @@ class TestStoreClearData(unittest.TestCase):
         with mock.patch.object(bundle.repo, "write",
                                side_effect=OSError("disk full")):
             st, r = self.admin.post(f"/api/stores/{self.s4}/clear-data", {
-                "confirm_store_name": "边界四店"})
+                "confirm_store_name": "边界四店",
+                "confirm_acknowledged": True})
         self.assertEqual(st, 500)
         self.assertIn("已从快照回滚", r["message"])
         # 数据完整恢复到清理前状态
@@ -1406,7 +1425,8 @@ class TestStoreClearData(unittest.TestCase):
 
     def test_09_two_step_delete_after_clear(self):
         st, r = self.admin.post(f"/api/stores/{self.s1}/delete", {
-            "confirm_store_name": "清理数据店"})
+            "confirm_store_name": "清理数据店",
+            "confirm_acknowledged": True})
         self.assertEqual(st, 200, r)
         self.assertIsNone(_find_store(self.env, self.s1))
         self.assertFalse(_store_dir_exists(self.env, self.s1))
@@ -1659,10 +1679,12 @@ class TestFrontendAssets(unittest.TestCase):
         self.assertIn('id="btn-create-store"', html)
         self.assertIn("openCreateStore", html)
         self.assertIn('API.post("/api/stores"', html)
-        # 停用/启用/归档入口 + 影响说明（数据保留 + 重新登录）
+        # 停用/启用入口 + 影响说明（数据保留 + 重新登录）
         self.assertIn("changeStoreStatus", html)
-        for action in ("disable", "enable", "archive"):
+        # 归档入口已移除 → 仅断言 disable/enable
+        for action in ("disable", "enable"):
             self.assertIn(f", '{action}')", html)
+        self.assertNotIn(", 'archive')", html)
         self.assertIn("业务数据完整保留", html)
         self.assertIn("需重新登录", html)
         # 查看数据（十项清点只读）
@@ -1670,10 +1692,11 @@ class TestFrontendAssets(unittest.TestCase):
         self.assertIn("inventory", html)
         # 删除: 五要素 + 强确认 + 两步删除 + 阻止预告
         self.assertIn("deleteStoreFlow", html)
-        for frag in ("店铺名称", "店铺 ID", "归属成员", "影响说明",
-                     "确认删除", "confirm_store_name", "clearStoreDataFlow",
-                     "清除店铺业务数据", "物理删除将被阻止"):
+        for frag in ("店铺名称", "店铺 ID", "归属成员",
+                     "confirm_store_name", "confirm_acknowledged",
+                     "永久删除店铺及全部数据", "我确认永久删除该店铺及其全部关联业务数据"):
             self.assertIn(frag, html)
+        self.assertNotIn("物理删除将被阻止", html)
         # 筛选扩展（店铺 ID / 店铺状态）
         self.assertIn('id="f-store-id"', html)
         self.assertIn('id="f-status"', html)
@@ -1759,16 +1782,22 @@ class TestAuditAndSecurity(unittest.TestCase):
             "name": "审计空店", "owner_user_id": cls.env.get_user_id("aud_a")})
         assert st == 200, r
         cls.s_created = r["data"]["store_id"]
-        for action in ("disable", "enable", "archive"):
+        for action in ("disable", "enable"):
             st, r = cls.admin.post(
                 f"/api/stores/{cls.s_created}/status", {"action": action})
             assert st == 200, r
+        # 归档已下线 → archive 预期 400
+        st, r = cls.admin.post(
+            f"/api/stores/{cls.s_created}/status", {"action": "archive"})
+        assert st == 400, r
         # clear_data + delete（主店: 先清空再删除）
         st, r = cls.admin.post(f"/api/stores/{cls.m1}/clear-data", {
-            "confirm_store_name": "审计主店"})
+            "confirm_store_name": "审计主店",
+            "confirm_acknowledged": True})
         assert st == 200, r
         st, r = cls.admin.post(f"/api/stores/{cls.m1}/delete", {
-            "confirm_store_name": "审计主店"})
+            "confirm_store_name": "审计主店",
+            "confirm_acknowledged": True})
         assert st == 200, r
         # model_migrate: 构造缺字段样本后迁移
         st, r = cls.admin.post("/api/stores", {
@@ -1793,11 +1822,11 @@ class TestAuditAndSecurity(unittest.TestCase):
         cls.env.cleanup()
 
     def test_01_all_seven_events_five_elements(self):
-        """7 类新事件逐条五要素: 事件类型/时间/操作管理员/结果/店铺 ID"""
+        """6 类 success 事件 + store.archive_removed denied 事件，逐条五要素"""
         entries = _read_security_log(self.env)
+        # 6 类 success 事件（store.archive success 不再存在）
         for event in ("store.create", "store.disable", "store.enable",
-                      "store.archive", "store.delete", "store.clear_data",
-                      "store.model_migrate"):
+                      "store.delete", "store.clear_data", "store.model_migrate"):
             hits = [e for e in entries if e["event"] == event
                     and e.get("result") == "success"]
             self.assertTrue(hits, f"缺少成功事件 {event}")
@@ -1810,6 +1839,15 @@ class TestAuditAndSecurity(unittest.TestCase):
                 self.assertTrue(e["detail"].get("migrated"), event)
             else:
                 self.assertIn("store_id", e["detail"], event)
+        # store.archive_removed denied 事件存在且含五要素
+        arch_removed = [e for e in entries if e["event"] == "store.archive_removed"
+                        and e.get("result") == "denied"]
+        self.assertTrue(arch_removed, "缺少 store.archive_removed denied 事件")
+        e = arch_removed[-1]
+        self.assertEqual(e["username"], self.operator_name)
+        self.assertEqual(e["user_id"], self.operator_id)
+        self.assertTrue(e.get("time"))
+        self.assertIn("store_id", e["detail"])
 
     def test_02_no_secrets_in_audit_logs(self):
         """审计红线: 新事件日志不含密码/哈希/令牌等敏感内容"""
@@ -1873,7 +1911,7 @@ class TestAuditAndSecurity(unittest.TestCase):
                 and e["event"].startswith("store.")]
         events = {e["event"] for e in mine}
         self.assertTrue({"store.create", "store.disable", "store.enable",
-                         "store.archive", "store.delete", "store.clear_data",
+                         "store.archive_removed", "store.delete", "store.clear_data",
                          "store.model_migrate"} <= events)
         for e in mine:
             self.assertTrue(e.get("time"))
@@ -1972,10 +2010,12 @@ class TestAcceptance12(unittest.TestCase):
             self.assertEqual(st, 200, r)
             self.assertEqual(r["data"]["status"], expect)
         st, r = self.admin.post(f"/api/stores/{sid}/clear-data", {
-            "confirm_store_name": "验收链路店改"})
+            "confirm_store_name": "验收链路店改",
+            "confirm_acknowledged": True})
         self.assertEqual(st, 200, r)
         st, r = self.admin.post(f"/api/stores/{sid}/delete", {
-            "confirm_store_name": "验收链路店改"})
+            "confirm_store_name": "验收链路店改",
+            "confirm_acknowledged": True})
         self.assertEqual(st, 200, r)
         self.assertIsNone(_find_store(self.env, sid))
         # 全链路后两牺牲成员归属关系复原
@@ -2080,39 +2120,41 @@ class TestAcceptance12(unittest.TestCase):
         self.assertIn(self.a1, _find_user(self.env, "acc_b")["store_ids"])
 
     def test_11_delete_not_hurt_historical_finance(self):
-        # A2 有历史交易 → 物理删除被阻止（财务可追溯保护）
-        st, r = self.admin.post(f"/api/stores/{self.a2}/delete", {
-            "confirm_store_name": "验收A二店"})
-        self.assertEqual(st, 400)
-        self.assertIn("历史交易数据", r["message"])
-        # 替代路径: 归档封存, 数据完整保留（可追溯）
+        # 有数据店铺直接删除成功（归档下线 + 物理删除新契约）
         before = len(_read_business_records(self.env, self.a2, "orders"))
+        st, r = self.admin.post(f"/api/stores/{self.a2}/delete", {
+            "confirm_store_name": "验收A二店",
+            "confirm_acknowledged": True})
+        self.assertEqual(st, 200, r)
+        self.assertEqual(r["data"]["deleted_counts"]["orders"], before)
+        # 删除后店铺不存在
+        self.assertIsNone(_find_store(self.env, self.a2))
+        self.assertFalse(_store_dir_exists(self.env, self.a2))
+        # 归档已下线 → archive 请求预期 400（归档下线校验先于店铺存在性）
         st, r = self.admin.post(f"/api/stores/{self.a2}/status", {
             "action": "archive"})
-        self.assertEqual(st, 200, r)
-        self.assertEqual(r["data"]["status"], "archived")
-        self.assertEqual(r["data"]["data_preserved"], True)
-        after = len(_read_business_records(self.env, self.a2, "orders"))
-        self.assertEqual(after, before)
-        st, r = self.admin.get(f"/api/stores/{self.a2}")
-        self.assertEqual(st, 200)
-        self.assertEqual(r["data"]["status"], "archived")
-        self.assertEqual(r["data"]["inventory"]["orders"], before)
+        self.assertEqual(st, 400)
 
     def test_12_pages_functional_dual_identity(self):
         pages = ["/dashboard", "/data-import", "/orders", "/refund-orders",
-                 "/refund-details", "/supplier-costs", "/reconciliation",
+                 "/supplier-costs", "/reconciliation",
                  "/profit", "/anomalies", "/logs"]
         for path in pages + ["/users", "/stores", "/users/create"]:
             st, body, _ = self.admin.get_page(path)
             self.assertEqual(st, 200, path)
             self.assertNotIn("服务器错误", body, path)
-        # B（转移后两店）member 视角: 10 业务页正常且无管理入口
-        for path in pages:
+        # B（转移后两店）member 视角: 业务页正常且无管理入口;
+        # 异常处理/操作日志仅 admin 可见, member 访问被拒
+        member_pages = [p for p in pages if p not in ("/anomalies", "/logs")]
+        for path in member_pages:
             st, body, headers = self.b.get_page(path)
             self.assertEqual(st, 200, path)
             self.assertNotIn("admin-nav-start", body, path)
+            self.assertNotIn("admin-only-nav-start", body, path)
             self.assertNotIn('href="/stores"', body, path)
+        for path in ("/anomalies", "/logs"):
+            st, _, _ = self.b.get_page(path)
+            self.assertNotEqual(st, 200, f"{path} member 应被拒绝")
         st, r = self.b.get("/api/auth/me")
         self.assertEqual(r["data"]["store_count"], 2)
         st, r = self.b.get(f"/api/summary?month={MONTH}")
@@ -2353,20 +2395,22 @@ class TestOwnershipTransferEnhancements(unittest.TestCase):
         self.assertGreater(r["data"]["total"], 0)
 
     def test_06_frontend_transfer_dialog_assets(self):
-        """前端静态断言: 弹窗三要素/仅启用普通成员/无成员提示/幂等文案"""
+        """前端静态断言: 专用归属弹窗已移除，归属修改经"编辑"弹窗完成"""
         html = _read_static("stores.html")
-        for frag in ("修改店铺归属", "店铺名称：", "店铺 ID：", "当前归属成员："):
-            self.assertIn(frag, html)
+        # 专用归属弹窗的标题与入口函数均已删除
+        for removed in ("修改店铺归属", "openTransferOwnership",
+                        "confirmTransferOwnership", "showTransferResult"):
+            self.assertNotIn(removed, html)
+        # 归属修改改由 editStore 弹窗承担：标题 + 归属者下拉框
+        self.assertIn("编辑店铺", html)
+        self.assertIn('id="rn-owner"', html)
+        self.assertIn("店铺归属者", html)
         # 成员列表仅显示启用状态的普通成员（过滤管理员与停用成员）
         self.assertIn('u.role === "member" && u.status === "active"', html)
-        # 无可用成员提示 + 提交按钮默认禁用（必须明确选择）
-        self.assertIn("暂无可用的普通成员", html)
-        self.assertIn(
-            'text: "下一步：确认变更", kind: "primary", disabled: true', html)
-        # 幂等响应如实提示"归属成员未发生变化"
-        self.assertIn("r.unchanged", html)
-        self.assertIn("归属成员未发生变化", html)
-        self.assertIn("未执行归属变更", html)
+        # 无可用成员提示
+        self.assertIn("系统中没有可用的普通成员，请先创建成员账号", html)
+        # 保存时调用归属转移接口
+        self.assertIn("/transfer-ownership", html)
 
 
 if __name__ == "__main__":

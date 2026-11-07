@@ -16,19 +16,21 @@ import re
 import shutil
 import sys
 import traceback
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import config
+from . import config, page_shell
 from .api_response import ApiResponse
 from .auth import (AuthError, LoginRateLimiter, SecurityLog, SessionStore,
                    UserManager, REGISTER_MAX_REQUESTS,
                    REGISTER_WINDOW_SECONDS, RegistrationRateLimiter)
 from .data_schemas import BUSINESS_FILES, SERVICE_NAME, VERSION, now_iso
-from .errors import (ImportServiceError, ProfitServiceError,
+from .errors import (ApiError as ServiceApiError, ImportServiceError,
+                     OrderNotFoundError, ProfitServiceError,
                      ReconcileServiceError)
 from .json_repository import FileLock, RepositoryError
 from .list_queries import PAGE_SIZES
@@ -36,7 +38,8 @@ from .order_queries import NORMAL_SORT_FIELDS, REFUND_SORT_FIELDS
 from .refund_view import SUCCESS_STATUSES
 from .store_services import (StoreServiceRegistry, StoreServices,
                              migrate_legacy_store_data)
-from .time_range import TimeRangeError, range_meta, resolve_range
+from .time_range import (MONTH_RE, TimeRangeError, month_bounds, range_meta,
+                        resolve_range)
 
 UPLOAD_PATHS = {
     "/api/import/wechat-orders": "wechat_orders",
@@ -58,10 +61,10 @@ PAGE_ROUTES = {
     "/data-import": "index.html",
     "/orders": "orders.html",
     "/refund-orders": "refund_orders.html",
-    "/refund-details": "refund_details.html",
     "/supplier-costs": "supplier_costs.html",
     "/reconciliation": "reconciliation.html",
     "/profit": "profit.html",
+    "/monthly-profit": "monthly_profit.html",
     "/anomalies": "anomalies.html",
     "/logs": "logs.html",
     "/users": "users.html",
@@ -78,12 +81,19 @@ PAGE_ROLE = {
     "users.html": "admin",
     "create_user.html": "admin",
     "stores.html": "admin",
+    "anomalies.html": "admin",
+    "logs.html": "admin",
 }
 
 # 侧边栏"用户管理"菜单组标记块（nav_user_mgmt）: member 会话输出页面前剔除,
 # 导航结构不向未授权角色输出; 页面级访问控制仍由 _page_access 兜底
 ADMIN_NAV_BLOCK_RE = re.compile(
     rb"<!--admin-nav-start-->.*?<!--admin-nav-end-->", re.S)
+
+# 侧边栏"异常处理/操作日志"标记块（admin_only_nav）: 仅 admin 可见,
+# member 会话输出页面前剔除; 页面级访问由 PAGE_ROLE 兜底
+ADMIN_ONLY_NAV_RE = re.compile(
+    rb"<!--admin-only-nav-start-->.*?<!--admin-only-nav-end-->", re.S)
 
 SESSION_COOKIE = "wxr_session"
 
@@ -144,7 +154,14 @@ class ReconcileServer:
         self.registry = StoreServiceRegistry(self.stores_root)
         # 全局备份目录: 店铺数据清理/删除账号前的整店快照存放处（独立于店铺自身 backups/）
         self.backup_dir = backup_dir or config.BACKUP_DIR
-        os.makedirs(self.backup_dir, exist_ok=True)
+        try:
+            os.makedirs(self.backup_dir, exist_ok=True)
+            os.makedirs(config.LOG_DIR, exist_ok=True)
+            os.makedirs(config.UPLOAD_DIR, exist_ok=True)
+        except OSError:
+            raise ServerStartupError(
+                "数据目录创建失败，请将程序复制到有写入权限的目录运行",
+                host=self.host, port=self.port) from None
         self.started_at = now_iso()
         self.httpd = None
 
@@ -415,6 +432,10 @@ class ReconcileServer:
                 base[k] = base[k] + v
             elif isinstance(base[k], dict) and isinstance(v, dict):
                 ReconcileServer._merge_dicts(base[k], v)
+            elif k == "latest_order_month":
+                if isinstance(v, str) and (
+                        not isinstance(base[k], str) or v > base[k]):
+                    base[k] = v
             elif isinstance(base[k], str) and isinstance(v, str):
                 a = ReconcileServer._try_decimal(base[k])
                 b = ReconcileServer._try_decimal(v)
@@ -524,6 +545,7 @@ class ReconcileServer:
         """合并多个同构 Excel: 首文件保留表头, 其余逐行追加数据"""
         import io
         from openpyxl import load_workbook
+        from .excel_export import append_row
         if len(buffers) == 1:
             return buffers[0]
         wb = load_workbook(io.BytesIO(buffers[0]))
@@ -531,7 +553,7 @@ class ReconcileServer:
         for buf in buffers[1:]:
             wb2 = load_workbook(io.BytesIO(buf))
             for row in wb2.active.iter_rows(min_row=2, values_only=True):
-                ws.append(list(row))
+                append_row(ws, list(row))
         out = io.BytesIO()
         wb.save(out)
         return out.getvalue()
@@ -572,6 +594,7 @@ class ReconcileServer:
         """
         import io
         from openpyxl import load_workbook
+        from .excel_export import append_row
         merged = {}
         for s in stats_list:
             ReconcileServer._merge_dicts(merged, s)
@@ -594,12 +617,13 @@ class ReconcileServer:
             row[col["状态原因"]] = "；".join(notes)
         for name, key in (("产品成本", "product_cost_total"),
                           ("快递费合计", "courier_fee_total"),
-                          ("综合成本", "composite_cost_total")):
+                          ("综合成本", "composite_cost_total"),
+                          ("技术服务费", "technical_service_fee")):
             v = ReconcileServer._try_decimal(merged.get(key))
             row[col[name]] = v
-        ws.append(row)
+        append_row(ws, row)
         summary_idx = ws.max_row
-        for name in ("产品成本", "快递费合计", "综合成本"):
+        for name in ("产品成本", "快递费合计", "综合成本", "技术服务费"):
             c = ws.cell(row=summary_idx, column=col[name] + 1)
             if c.value is not None:
                 c.number_format = "0.00"
@@ -806,6 +830,7 @@ class ReconcileServer:
         self.port = self.httpd.server_address[1]
         self.started_at = now_iso()
         self._log_lifecycle("server.start", detail={"host": self.host, "port": self.port})
+        print(f"服务已就绪，请在浏览器访问：http://{self.host}:{self.port}")
         if blocking:
             try:
                 self.httpd.serve_forever()
@@ -907,7 +932,9 @@ class ReconcileServer:
                     # 统一 CSRF 校验: 除登录/初始化外的全部写请求
                     if method == "POST" and parsed.path not in PUBLIC_APIS_POST:
                         app._check_csrf(self)
-                    if method == "POST" and parsed.path in UPLOAD_PATHS:
+                    if method == "POST" and parsed.path == "/api/import/precheck":
+                        app.route_precheck(self, parsed)
+                    elif method == "POST" and parsed.path in UPLOAD_PATHS:
                         app.route_upload(self, parsed)
                     elif method == "GET":
                         app.route_get(self, parsed)
@@ -924,7 +951,9 @@ class ReconcileServer:
                     self._send(ApiResponse.error(str(e), code=e.code, data=e.data),
                                e.http_status)
                 except AuthError as e:
-                    self._send(ApiResponse.error(str(e), code=e.code), e.http_status)
+                    self._send(ApiResponse.error(str(e), code=e.code,
+                                                 data=e.extra or None),
+                               e.http_status)
                 except TimeRangeError as e:
                     self._send(ApiResponse.error(f"时间筛选参数错误: {e}", code=400),
                                400)
@@ -1094,6 +1123,10 @@ class ReconcileServer:
         bundle = self._services(handler)
         if path == "/api/ad-expenses":
             return self._handle_ad_expenses(handler, parsed, bundle)
+        if path == "/api/other-expenses":
+            return self._handle_other_expenses(handler, parsed, bundle)
+        if path == "/api/monthly-profit":
+            return self._handle_monthly_profit(handler, parsed)
         m = re.fullmatch(r"/api/data/([a-z_]+)", path)
         if m:
             return self._handle_get_data(handler, parsed, m.group(1), bundle)
@@ -1109,10 +1142,6 @@ class ReconcileServer:
             return self._handle_orders(handler, parsed, kind="refund", bundle=bundle)
         if path == "/api/refund-orders/export":
             return self._handle_orders_export(handler, parsed, kind="refund", bundle=bundle)
-        if path == "/api/refund-details":
-            return self._handle_refund_details(handler, parsed, bundle)
-        if path == "/api/refund-details/export":
-            return self._handle_refund_details_export(handler, parsed, bundle)
         if path == "/api/supplier-costs":
             return self._handle_supplier_costs(handler, parsed, bundle)
         if path == "/api/supplier-costs/export":
@@ -1129,6 +1158,8 @@ class ReconcileServer:
             return self._handle_reconciliation_export(handler, parsed, bundle)
         if path == "/api/reconciliation/options":
             return self._handle_reconciliation_options(handler, parsed, bundle)
+        if path == "/api/reconciliation/modifiable-fields":
+            return self._handle_reconciliation_modifiable_fields(handler, parsed, bundle)
         if path == "/api/summary":
             return self._handle_summary(handler, parsed, bundle)
         if path == "/api/profit":
@@ -1225,6 +1256,8 @@ class ReconcileServer:
         # 批量路由自行展开 _write_targets（admin 无店也允许 all），不经 _write_target
         if path == "/api/reconciliation/run":
             return self._handle_reconciliation_run(handler, body, None)
+        if path == "/api/reconciliation/manual-order-cost":
+            return self._handle_reconciliation_manual_order_cost(handler, body)
         if path == "/api/profit/recalculate":
             return self._handle_profit_recalculate(handler, body, None)
         if path == "/api/import/confirm":
@@ -1232,8 +1265,14 @@ class ReconcileServer:
         bundle = self._write_target(handler, body)
         if path == "/api/ad-expenses":
             return self._handle_ad_expense_save(handler, body, bundle)
+        if path == "/api/other-expenses":
+            return self._handle_other_expense_save(handler, body, bundle)
         if path == "/api/reconciliation/manual-match":
             return self._handle_reconciliation_manual_match(handler, body, bundle)
+        if path == "/api/reconciliation/manual-modify":
+            return self._handle_reconciliation_manual_modify(handler, body, bundle)
+        if path == "/api/reconciliation/manual-cost":
+            return self._handle_reconciliation_manual_cost(handler, body, bundle)
         if path == "/api/profit/config":
             return self._handle_profit_config(handler, body, bundle)
         if path == "/api/backup":
@@ -1272,6 +1311,26 @@ class ReconcileServer:
         result["target_store_name"] = store_name
         result["target_owner_username"] = (owner or {}).get("username")
         handler._send(ApiResponse.ok(result, message="预览成功"))
+
+    def route_precheck(self, handler, parsed):
+        """文件初步校验（不要求 store_id，不写业务数据，仅供导入流程前置校验）"""
+        self._resolve_session(handler)
+        qs = parse_qs(parsed.query)
+        source_type = qs.get("source_type", [None])[0]
+        if source_type not in set(UPLOAD_PATHS.values()):
+            raise ApiError("未知数据源类型", code=400, http_status=400)
+        length = int(handler.headers.get("Content-Length") or 0)
+        if length <= 0:
+            raise ApiError("请上传文件内容（请求体为空）", code=400, http_status=400)
+        if length > config.MAX_UPLOAD_MB * 1024 * 1024:
+            raise ApiError(f"文件超过大小限制 {config.MAX_UPLOAD_MB}MB",
+                           code=413, http_status=413)
+        filename = unquote(handler.headers.get("X-Filename") or "upload.xlsx")
+        data = handler.rfile.read(length)
+        from .import_service import ImportService
+        importer = ImportService(repo=None, op_log=None)
+        result = importer.precheck(source_type, filename, data)
+        handler._send(ApiResponse.ok(result, message="文件校验通过"))
 
     # ---------- 处理器 ----------
     def _operator(self, handler):
@@ -2286,6 +2345,205 @@ class ReconcileServer:
                                          operator=self._operator(handler))
         handler._send(ApiResponse.ok(record, message="广告花费已保存"))
 
+    def _handle_other_expenses(self, handler, parsed, bundle):
+        qs = parse_qs(parsed.query)
+        month = qs.get("month", [None])[0] or None
+        self._scoped_options(
+            handler, parsed, lambda b: b.other_expenses.list(month=month))
+
+    def _handle_other_expense_save(self, handler, body, bundle):
+        month = body.get("month")
+        amount = body.get("amount")
+        note = body.get("note")
+        if not month or not isinstance(month, str):
+            raise ApiError("请提供 month（格式 YYYY-MM）", code=400, http_status=400)
+        if amount is None or isinstance(amount, bool) or not isinstance(amount, (int, float, str)):
+            raise ApiError("请提供数字型 amount", code=400, http_status=400)
+        try:
+            record = bundle.other_expenses.save(
+                month, str(amount), note=note, operator=self._operator(handler))
+        except ServiceApiError as e:
+            raise ApiError(str(e), code=e.code, http_status=e.http_status)
+        handler._send(ApiResponse.ok(record, message="其他费用已保存"))
+
+    @staticmethod
+    def _month_overlaps(month, start, end):
+        ms, me = month_bounds(month)
+        if start and me <= start:
+            return False
+        if end and ms >= end:
+            return False
+        return True
+
+    @staticmethod
+    def _empty_month(month):
+        return {
+            "month": month,
+            "order_count": 0,
+            "sales_amount": "0.00",
+            "product_cost_total": "0.00",
+            "courier_fee_total": "0.00",
+            "technical_service_fee": "0.00",
+            "refund_amount": "0.00",
+            "product_cost_missing_count": 0,
+            "courier_fee_missing_count": 0,
+            "ad_expense": "0.00",
+            "ad_recorded": False,
+            "other_expense": "0.00",
+            "other_recorded": False,
+            "other_note": "",
+        }
+
+    @staticmethod
+    def _add_money(left, right):
+        total = Decimal(left or "0") + Decimal(right or "0")
+        return str(total.quantize(Decimal("0.01")))
+
+    def _handle_monthly_profit(self, handler, parsed):
+        qs = parse_qs(parsed.query)
+        start, end = self._time_filter(qs)
+        scope = self._query_scope(handler, parsed)
+        merged = {}
+        has_calculation = False
+        latest_data_month = None
+        latest_fees = {}
+        for bundle, _sid, _sname in scope.targets:
+            unfiltered = bundle.profits.monthly_operating()
+            for row in unfiltered["months"]:
+                month = row["month"]
+                latest_fees[month] = self._add_money(
+                    latest_fees.get(month, "0.00"),
+                    row.get("technical_service_fee"))
+                if latest_data_month is None or month > latest_data_month:
+                    latest_data_month = month
+            part = unfiltered if start is None and end is None \
+                else bundle.profits.monthly_operating(start, end)
+            has_calculation = has_calculation or part["has_calculation"]
+            ads = {}
+            for rec in bundle.ad_expenses.list()["records"]:
+                month = rec.get("month")
+                if (month and MONTH_RE.match(month)
+                        and self._month_overlaps(month, start, end)):
+                    ads[month] = rec
+            others = {}
+            for rec in bundle.other_expenses.list()["records"]:
+                month = rec.get("month")
+                if (month and MONTH_RE.match(month)
+                        and self._month_overlaps(month, start, end)):
+                    others[month] = rec
+            months = ({row["month"] for row in part["months"]}
+                      | set(ads) | set(others))
+            by_month = {row["month"]: row for row in part["months"]}
+            for month in months:
+                slot = merged.setdefault(month, self._empty_month(month))
+                row = by_month.get(month)
+                if row:
+                    slot["order_count"] += row["order_count"]
+                    slot["sales_amount"] = self._add_money(
+                        slot["sales_amount"], row["sales_amount"])
+                    slot["product_cost_total"] = self._add_money(
+                        slot["product_cost_total"], row["product_cost_total"])
+                    slot["courier_fee_total"] = self._add_money(
+                        slot["courier_fee_total"], row["courier_fee_total"])
+                    slot["technical_service_fee"] = self._add_money(
+                        slot["technical_service_fee"],
+                        row.get("technical_service_fee"))
+                    slot["refund_amount"] = self._add_money(
+                        slot["refund_amount"], row.get("refund_amount"))
+                    slot["product_cost_missing_count"] += row[
+                        "product_cost_missing_count"]
+                    slot["courier_fee_missing_count"] += row[
+                        "courier_fee_missing_count"]
+                ad = ads.get(month)
+                if ad:
+                    slot["ad_expense"] = self._add_money(
+                        slot["ad_expense"], ad.get("amount") or "0")
+                    slot["ad_recorded"] = True
+                other = others.get(month)
+                if other:
+                    slot["other_expense"] = self._add_money(
+                        slot["other_expense"], other.get("amount") or "0")
+                    slot["other_recorded"] = True
+                    note = (other.get("note") or "").strip()
+                    if note:
+                        prev = slot.get("other_note") or ""
+                        slot["other_note"] = f"{prev}；{note}" if prev else note
+        months_out = []
+        for month in sorted(merged, reverse=True):
+            slot = merged[month]
+            profit = (Decimal(slot["sales_amount"])
+                      - Decimal(slot["product_cost_total"])
+                      - Decimal(slot["courier_fee_total"])
+                      - Decimal(slot["technical_service_fee"])
+                      - Decimal(slot["refund_amount"])
+                      - Decimal(slot["ad_expense"])
+                      - Decimal(slot["other_expense"]))
+            slot["profit"] = str(profit.quantize(Decimal("0.01")))
+            months_out.append(slot)
+        totals = self._empty_month("")
+        totals.pop("month")
+        totals.pop("ad_recorded")
+        totals.pop("other_recorded")
+        totals.pop("other_note")
+        for slot in months_out:
+            totals["order_count"] += slot["order_count"]
+            totals["sales_amount"] = self._add_money(
+                totals["sales_amount"], slot["sales_amount"])
+            totals["product_cost_total"] = self._add_money(
+                totals["product_cost_total"], slot["product_cost_total"])
+            totals["courier_fee_total"] = self._add_money(
+                totals["courier_fee_total"], slot["courier_fee_total"])
+            totals["technical_service_fee"] = self._add_money(
+                totals["technical_service_fee"], slot["technical_service_fee"])
+            totals["refund_amount"] = self._add_money(
+                totals["refund_amount"], slot["refund_amount"])
+            totals["ad_expense"] = self._add_money(
+                totals["ad_expense"], slot["ad_expense"])
+            totals["other_expense"] = self._add_money(
+                totals["other_expense"], slot["other_expense"])
+            totals["product_cost_missing_count"] += slot[
+                "product_cost_missing_count"]
+            totals["courier_fee_missing_count"] += slot[
+                "courier_fee_missing_count"]
+        totals["profit"] = str((
+            Decimal(totals["sales_amount"])
+            - Decimal(totals["product_cost_total"])
+            - Decimal(totals["courier_fee_total"])
+            - Decimal(totals["technical_service_fee"])
+            - Decimal(totals["refund_amount"])
+            - Decimal(totals["ad_expense"])
+            - Decimal(totals["other_expense"])
+        ).quantize(Decimal("0.01")))
+        scope_name = "all" if scope.multi else scope.store_name
+        month_q = qs.get("month", [None])[0] or None
+        order_months = set()
+        for bundle, _sid, _sname in scope.targets:
+            order_months.update(bundle.profits.calculable_order_months(start, end))
+        profit_months = {row["month"] for row in months_out}
+        diagnosis = None
+        if month_q and MONTH_RE.match(month_q):
+            if month_q in order_months and month_q not in profit_months:
+                diagnosis = (
+                    "该月有可读订单但暂无核算汇总，请打开「利润核算」、清除时间筛选后执行「重算」。"
+                )
+            elif month_q not in order_months and month_q not in profit_months:
+                diagnosis = (
+                    "该月没有可统计订单：可能未导入、导入时已剔除未发货，或订单状态不可核算。"
+                )
+        handler._send(ApiResponse.ok({
+            "has_calculation": has_calculation,
+            "formula": "每月盈利 = 销售额 − 货品成本合计 − 快递成本合计 − 技术服务费 − 退款金额 − 广告费 − 其他费用",
+            "months": months_out,
+            "totals": totals,
+            "latest_data_month": latest_data_month,
+            "latest_technical_service_fee": latest_fees.get(latest_data_month),
+            "calculable_order_months": sorted(order_months),
+            "profit_months": sorted(profit_months),
+            "diagnosis": diagnosis,
+            "store_scope": scope_name,
+            "time_range": self._time_meta(qs),
+        }))
+
     def _handle_static(self, handler, rel):
         static_root = os.path.realpath(config.STATIC_DIR)
         full = os.path.realpath(os.path.join(static_root, rel))
@@ -2297,8 +2555,16 @@ class ReconcileServer:
         mime = STATIC_MIME.get(ext, "application/octet-stream")
         with open(full, "rb") as f:
             content = f.read()
+        # 统一应用外壳：页面仅保留占位符，侧边栏/顶栏由服务端按路由注入，
+        # 避免 12 个页面重复维护同一份导航结构（当前项高亮按页面文件映射）。
+        if ext == ".html" and page_shell.SHELL_TOKEN in content:
+            active = page_shell.PAGE_FILE_ACTIVE_ROUTE.get(rel, "/")
+            content = content.replace(
+                page_shell.SHELL_TOKEN,
+                page_shell.render(active).encode("utf-8"))
         # 侧边栏管理菜单组仅对 admin 输出: 非 admin 会话剔除 admin-nav 标记块
-        if ext == ".html" and b"admin-nav-start" in content:
+        if ext == ".html" and (b"admin-nav-start" in content
+                               or b"admin-only-nav-start" in content):
             _, session = self._session_from_cookie(handler)
             is_admin = False
             if session is not None:
@@ -2310,6 +2576,7 @@ class ReconcileServer:
                     is_admin = True
             if not is_admin:
                 content = ADMIN_NAV_BLOCK_RE.sub(b"", content)
+                content = ADMIN_ONLY_NAV_RE.sub(b"", content)
         handler._send_bytes(mime, content)
 
     def _handle_health(self, handler):
@@ -2430,6 +2697,21 @@ class ReconcileServer:
             target_store_id=target_store_id, target_user_id=target_user_id,
             uploaded_by_user_id=user.get("user_id"),
             target_store_name=store_name)
+        period = result.get("affected_period") or {}
+        _op = self._operator(handler)
+        try:
+            bundle.reconciler.run_reconciliation(
+                start=period.get("start"), end=period.get("end"),
+                operator=_op)
+            # 导入后全量利润重算，避免仅覆盖本批次时间段导致其他月份汇总缺失
+            bundle.profits.run_calculation(operator=_op)
+        except Exception as e:
+            bundle.op_log.append("import_overwrite_failed", detail={
+                "batch_id": result.get("batch_id"),
+                "store_id": target_store_id,
+                "error": str(e),
+                "reason": "导入后自动重算失败",
+            }, operator=_op)
         handler._send(ApiResponse.ok(result, message="导入成功"))
 
     # ---------- 统一月份筛选（month/from/to -> 左闭右开区间） ----------
@@ -2548,6 +2830,189 @@ class ReconcileServer:
             note=body.get("note"), operator=self._operator(handler))
         handler._send(ApiResponse.ok(record, message="人工确认已保存"))
 
+    def _handle_reconciliation_manual_modify(self, handler, body, bundle):
+        order_id = body.get("order_id")
+        if not order_id or not isinstance(order_id, str):
+            raise ApiError("请提供 order_id（微信订单号）", code=400, http_status=400)
+        fields = body.get("fields") or {}
+        if not isinstance(fields, dict):
+            raise ApiError("fields 必须是字典", code=400, http_status=400)
+        cost_updates = body.get("cost_updates") or []
+        if not isinstance(cost_updates, list):
+            raise ApiError("cost_updates 必须是列表", code=400, http_status=400)
+        for cu in cost_updates:
+            if not isinstance(cu, dict) \
+                    or not isinstance(cu.get("field"), str) \
+                    or not isinstance(cu.get("supplier_record_id"), str) \
+                    or "value" not in cu:
+                raise ApiError("cost_updates 格式非法，每项需含 field/supplier_record_id/value",
+                               code=400, http_status=400)
+        if not fields and not cost_updates:
+            raise ApiError("fields 与 cost_updates 至少一个非空", code=400, http_status=400)
+        reason = body.get("reason")
+        if not reason or not isinstance(reason, str):
+            raise ApiError("请提供修改原因", code=400, http_status=400)
+        record = bundle.reconciler.manual_modify(
+            order_id, fields, reason, operator=self._operator(handler),
+            cost_updates=cost_updates)
+        handler._send(ApiResponse.ok(record, message="修改已保存，已重新校验"))
+
+    def _index_visible_orders(self, handler, items):
+        """一次扫过可见店铺，得到订单号到 (bundle, store_id) 的索引。"""
+        concrete = set()
+        missing = False
+        for item in items:
+            sid = item.get("target_store_id") or item.get("store_id")
+            if sid in (None, "", "all"):
+                missing = True
+            else:
+                concrete.add(sid)
+        _, _session, user = self._resolve_session(handler)
+        if user.get("role") == "admin":
+            if not missing and len(concrete) == 1:
+                targets = self._write_targets(
+                    handler, {"target_store_id": next(iter(concrete))})
+            else:
+                targets = self._write_targets(handler, {"target_store_id": "all"})
+                if concrete and not missing:
+                    targets = [t for t in targets if t[1] in concrete]
+        else:
+            targets = self._write_targets(handler, {})
+            if concrete and not missing:
+                targets = [t for t in targets if t[1] in concrete]
+        index = {}
+        for bundle, sid, _sname in targets:
+            for order in bundle.repo.read("orders")["records"]:
+                oid = order.get("order_id")
+                if oid:
+                    index.setdefault(oid, []).append((bundle, sid))
+        return index
+
+    def _bundle_owning_order(self, handler, body, order_id):
+        """定位订单所在店铺。指定了具体店铺就用该店；未选店铺时在可见店铺里查找。"""
+        target = None
+        if isinstance(body, dict):
+            target = body.get("target_store_id") or body.get("store_id")
+        if target not in (None, "", "all"):
+            return self._write_target(handler, {"target_store_id": target})
+        _, _session, user = self._resolve_session(handler)
+        if user.get("role") == "admin":
+            targets = self._write_targets(handler, {"target_store_id": "all"})
+        else:
+            targets = self._write_targets(handler, {})
+        found = []
+        for bundle, _sid, _sname in targets:
+            orders = bundle.repo.read("orders")["records"]
+            if any(o.get("order_id") == order_id for o in orders):
+                found.append(bundle)
+        if not found:
+            raise OrderNotFoundError(f"微信订单不存在: {order_id}")
+        if len(found) > 1:
+            raise ApiError("该订单号出现在多个店铺，请在对应店铺行中修改",
+                           code=400, http_status=400)
+        return found[0]
+
+    def _handle_reconciliation_manual_order_cost(self, handler, body):
+        """未匹配订单手工总成本 = 货品 + 快递，不要求先选择店铺。"""
+        if not isinstance(body, dict):
+            raise ApiError("请求体必须是 JSON 对象", code=400, http_status=400)
+        if isinstance(body.get("items"), list):
+            return self._handle_reconciliation_manual_order_cost_batch(
+                handler, body)
+        order_id = body.get("order_id")
+        if not order_id or not isinstance(order_id, str):
+            raise ApiError("请提供 order_id（微信订单号）", code=400, http_status=400)
+        if "product_amount" not in body or "courier_amount" not in body:
+            raise ApiError("请提供 product_amount（货品）和 courier_amount（快递）",
+                           code=400, http_status=400)
+        bundle = self._bundle_owning_order(handler, body, order_id)
+        operator = self._operator(handler)
+        result = bundle.reconciler.set_unmatched_order_cost(
+            order_id, body.get("product_amount"), body.get("courier_amount"),
+            operator=operator)
+        bundle.profits.run_calculation(operator=operator)
+        handler._send(ApiResponse.ok(result, message="总成本已保存"))
+
+    def _handle_reconciliation_manual_order_cost_batch(self, handler, body):
+        """一次保存多笔未匹配订单的货品+快递。先全部校验，再按店铺写入。"""
+        items = body.get("items")
+        if not items:
+            raise ApiError("请至少选择一条未匹配订单", code=400, http_status=400)
+        if len(items) > 200:
+            raise ApiError("一次最多修改 200 条", code=400, http_status=400)
+        normalized = []
+        for i, item in enumerate(items, 1):
+            if not isinstance(item, dict):
+                raise ApiError(f"第 {i} 条格式不正确", code=400, http_status=400)
+            order_id = item.get("order_id")
+            if not isinstance(order_id, str) or not order_id:
+                raise ApiError(f"第 {i} 条缺少订单号", code=400, http_status=400)
+            if "product_amount" not in item or "courier_amount" not in item:
+                raise ApiError(f"订单 {order_id} 请填写货品成本和快递费",
+                               code=400, http_status=400)
+            normalized.append(item)
+        order_index = self._index_visible_orders(handler, normalized)
+        grouped = []
+        by_bundle = {}
+        for item in normalized:
+            order_id = item["order_id"]
+            hits = order_index.get(order_id) or []
+            preferred = item.get("target_store_id") or item.get("store_id")
+            if preferred not in (None, "", "all"):
+                hits = [hit for hit in hits if hit[1] == preferred]
+            if not hits:
+                raise OrderNotFoundError(f"微信订单不存在: {order_id}")
+            if len(hits) > 1:
+                raise ApiError(f"订单 {order_id} 出现在多个店铺，请在对应店铺行中修改",
+                               code=400, http_status=400)
+            bundle = hits[0][0]
+            key = id(bundle)
+            if key not in by_bundle:
+                by_bundle[key] = (bundle, [])
+                grouped.append(by_bundle[key])
+            by_bundle[key][1].append({
+                "order_id": order_id,
+                "product_amount": item.get("product_amount"),
+                "courier_amount": item.get("courier_amount"),
+            })
+        for bundle, group in grouped:
+            bundle.reconciler.validate_unmatched_order_costs(group)
+        operator = self._operator(handler)
+        saved = []
+        for bundle, group in grouped:
+            saved.extend(bundle.reconciler.set_unmatched_order_costs(
+                group, operator=operator))
+            bundle.profits.run_calculation(operator=operator)
+        handler._send(ApiResponse.ok(
+            {"count": len(saved), "items": saved},
+            message=f"已保存 {len(saved)} 条总成本"))
+
+    def _handle_reconciliation_manual_cost(self, handler, body, bundle):
+        """未匹配供应商成本记录手动录入综合成本"""
+        supplier_record_id = body.get("supplier_record_id")
+        if not supplier_record_id or not isinstance(supplier_record_id, str):
+            raise ApiError("请提供 supplier_record_id", code=400, http_status=400)
+        total_amount = body.get("total_amount")
+        if total_amount is None:
+            raise ApiError("请提供 total_amount（综合成本）",
+                           code=400, http_status=400)
+        reason = body.get("reason")
+        result = bundle.reconciler.manual_cost_entry(
+            supplier_record_id, total_amount,
+            reason=reason, operator=self._operator(handler))
+        handler._send(ApiResponse.ok(
+            result, message="综合成本已保存"))
+
+    def _handle_reconciliation_modifiable_fields(self, handler, parsed, bundle):
+        qs = parse_qs(parsed.query)
+        order_id = qs.get("order_id", [None])[0]
+        if not order_id:
+            raise ApiError("请提供 order_id 查询参数", code=400, http_status=400)
+        scope = self._query_scope(handler, parsed)
+        b = scope.bundle
+        info = b.reconciler.get_modifiable_fields(order_id)
+        handler._send(ApiResponse.ok(info))
+
     # ---------- 利润核算与经营总览 ----------
     @staticmethod
     def _profit_filters(qs):
@@ -2646,7 +3111,69 @@ class ReconcileServer:
         if scope.multi:
             result["store_scope"] = "all"
             result["store_count"] = len(scope.targets)
+        result["daily_trends"] = self._summary_daily_trends(scope, start, end)
+        latest_batch = self._summary_latest_batch(scope)
+        result["latest_update_time"] = (latest_batch or {}).get("imported_at")
+        status_counts = result.get("profit_status_counts") or {}
+        result["business_status"] = {
+            "pending_reconcile": result.get("unmatched_order_count", 0),
+            "cost_unmatched": result.get("unmatched_order_count", 0),
+            "pending_profit": status_counts.get("pending_confirmation", 0),
+            "anomaly_count": result.get("open_anomaly_count", 0),
+            "latest_import_batch": latest_batch,
+        }
         handler._send(ApiResponse.ok(result))
+
+    def _summary_daily_trends(self, scope, start, end):
+        """聚合 scope 内各店铺的按日经营趋势（多店铺按日期合并累加）。
+        单店铺直接返回；多店铺按日期对齐累加后转 money_str。"""
+        from .normalizer import money_str
+        if not scope.multi:
+            return scope.bundle.profits.get_daily_trends(start, end)
+        trends = {"dates": [], "order_count": [], "actual_received": [],
+                  "refund_success": [], "supplier_cost": [],
+                  "contribution_profit": []}
+        day_idx = {}
+        money_keys = ("actual_received", "refund_success",
+                      "supplier_cost", "contribution_profit")
+        for b, _sid, _sn in scope.targets:
+            t = b.profits.get_daily_trends(start, end)
+            for i, d in enumerate(t["dates"]):
+                if d not in day_idx:
+                    day_idx[d] = len(trends["dates"])
+                    trends["dates"].append(d)
+                    trends["order_count"].append(0)
+                    for k in money_keys:
+                        trends[k].append(Decimal("0"))
+                idx = day_idx[d]
+                trends["order_count"][idx] += t["order_count"][i]
+                for k in money_keys:
+                    v = t[k][i]
+                    trends[k][idx] += Decimal(v) if v else Decimal("0")
+        order = sorted(range(len(trends["dates"])),
+                       key=lambda i: trends["dates"][i])
+        trends["dates"] = [trends["dates"][i] for i in order]
+        trends["order_count"] = [trends["order_count"][i] for i in order]
+        for k in money_keys:
+            trends[k] = [money_str(trends[k][i]) for i in order]
+        return trends
+
+    def _summary_latest_batch(self, scope):
+        """取 scope 内最近一条导入批次（按 imported_at 倒序）"""
+        latest = None
+        for b, _sid, _sn in scope.targets:
+            try:
+                batches = b.importer.list_batches(page=1, size=1)
+            except Exception:
+                continue
+            for rec in (batches.get("batches") or []):
+                if not isinstance(rec, dict):
+                    continue
+                if (latest is None
+                        or (rec.get("imported_at") or "")
+                        > (latest.get("imported_at") or "")):
+                    latest = rec
+        return latest
 
     # ---------- 订单查询 ----------
     def _parse_list_params(self, qs, kind):
@@ -2710,39 +3237,6 @@ class ReconcileServer:
 
         def export_fn(b):
             return b.queries.export_excel(kind, operator=operator, **params)
-
-        self._scoped_export(handler, parsed, export_fn)
-
-    # ---------- 退款明细（逐笔） ----------
-    def _refund_detail_filters(self, qs):
-        start, end = self._time_filter(qs)
-        time_field = qs.get("time_field", ["apply_time"])[0]
-        if time_field not in ("apply_time", "success_time"):
-            raise ApiError("time_field 仅支持 apply_time/success_time",
-                           code=400, http_status=400)
-        return {
-            "time_field": time_field, "start": start, "end": end,
-            "order_id": qs.get("order_id", [None])[0] or None,
-            "refund_status": qs.get("status", [None])[0] or None,
-            "keyword": qs.get("keyword", [None])[0] or None,
-        }
-
-    def _handle_refund_details(self, handler, parsed, bundle):
-        filters = self._refund_detail_filters(parse_qs(parsed.query))
-
-        def data_fn(b, _sid, _sname, page, size):
-            return b.queries.list_refund_details(
-                page=page, size=size, **filters)
-
-        self._scoped_list(handler, parsed, data_fn, "details")
-
-    def _handle_refund_details_export(self, handler, parsed, bundle):
-        filters = self._refund_detail_filters(parse_qs(parsed.query))
-        operator = self._operator(handler)
-
-        def export_fn(b):
-            return b.queries.export_refund_details_excel(
-                operator=operator, **filters)
 
         self._scoped_export(handler, parsed, export_fn)
 
@@ -2910,23 +3404,29 @@ class ReconcileServer:
         handler._send(ApiResponse.ok({"total": len(stores), "stores": stores}))
 
     def _handle_store_rename(self, handler, body, store_id):
-        """店铺重命名（仅管理员）: store_id 与数据归属不变"""
+        """店铺重命名（仅管理员）: store_id 与数据归属不变
+
+        并发保护: 前端可传 expected_updated_at, 与当前 updated_at 不一致时
+        返回 409 拒绝覆盖。
+        """
         _, operator = self._require_admin(handler)
         new_name = body.get("name")
         if not isinstance(new_name, str):
             raise ApiError("请提供店铺名称（name）", code=400, http_status=400)
-        old_name, applied = self.user_manager.rename_store(operator, store_id, new_name)
+        expected_updated_at = body.get("expected_updated_at")
+        old_name, applied = self.user_manager.rename_store(
+            operator, store_id, new_name,
+            expected_updated_at=expected_updated_at)
         detail = {"store_id": store_id, "old_name": old_name,
                   "new_name": applied}
         target_bundle = self.registry.get(store_id)
-        # operator 此处为用户 dict（_require_admin 返回 user），写入日志必须
-        # 落 username 字符串：否则 JSONL 中 operator 成为整个用户对象
-        # （含 password_hash），且 /api/logs 操作人去重集合抛 TypeError。
         target_bundle.op_log.append(
             "store.rename", detail=detail,
             operator=operator.get("username"))
+        renamed_store = self.user_manager.get_store(store_id)
         handler._send(ApiResponse.ok({
             "store_id": store_id, "old_name": old_name, "name": applied,
+            "updated_at": renamed_store.get("updated_at") if renamed_store else None,
         }, message="店铺已重命名"))
 
     # ---------- 店铺归属管理（仅管理员） ----------
@@ -3123,23 +3623,51 @@ class ReconcileServer:
         幂等: 新归属成员与当前归属一致且为有效普通成员时, 直接返回
         "归属成员未发生变化"（unchanged=true）, 不备份、不写盘、不吊销会话。
         失败: 业务校验拒绝时归属与业务数据零变更, 审计留痕含失败原因。
+        并发保护: 前端传 expected_updated_at, 与当前不一致时返回 409。
+        操作日志: 每次操作生成唯一 operation_id, 记录开始/完成时间、阶段、回滚结果。
         """
         _, operator = self._require_admin(handler)
+        operation_id = str(uuid.uuid4())
+        started_at = datetime.now().isoformat()
         target_user_id = body.get("target_user_id")
+        expected_updated_at = body.get("expected_updated_at")
         store = self.user_manager.get_store(store_id)
         store_name = store.get("name") if store else None
+
+        def _audit(result, extra=None):
+            detail = {
+                "operation_id": operation_id,
+                "started_at": started_at,
+                "completed_at": datetime.now().isoformat(),
+                "store_id": store_id,
+                "store_name": store_name,
+                "operator_role": operator.get("role"),
+                "target_user_id": target_user_id,
+            }
+            if extra:
+                detail.update(extra)
+            self.security_log.append(
+                "store.ownership_change", username=operator.get("username"),
+                user_id=operator["user_id"], ip=self._client_ip(handler),
+                result=result, detail=detail)
+            return detail
+
         if not isinstance(target_user_id, str) or not target_user_id:
-            self._audit_ownership_change(
-                handler, operator, store_id, store_name, None, "error",
-                {"reason": "请提供目标成员（target_user_id）"})
+            _audit("error", {"reason": "请提供目标成员（target_user_id）"})
             raise ApiError("请提供目标成员（target_user_id）",
                            code=400, http_status=400)
         if store is None:
-            self._audit_ownership_change(
-                handler, operator, store_id, None, target_user_id, "error",
-                {"reason": f"店铺不存在: {store_id}"})
+            _audit("error", {"reason": f"店铺不存在: {store_id}"})
             raise ApiError(f"店铺不存在: {store_id}", code=404, http_status=404)
         prev_owner_id = store.get("owner_user_id")
+        # 并发修改保护
+        if (expected_updated_at is not None
+                and store.get("updated_at") != expected_updated_at):
+            _audit("error", {"reason": "并发冲突: 店铺已被其他操作修改",
+                              "expected_updated_at": expected_updated_at,
+                              "actual_updated_at": store.get("updated_at")})
+            raise ApiError("店铺信息已被其他操作修改，请刷新后重试",
+                           code=409, http_status=409)
         # 幂等短路: 目标即当前归属且为有效普通成员 → 零写入零副作用
         if prev_owner_id == target_user_id:
             target = self.user_manager.get_user(target_user_id)
@@ -3156,19 +3684,19 @@ class ReconcileServer:
                         self.registry.get(store_id)),
                     "data_preserved": True,
                     "unchanged": True,
+                    "operation_id": operation_id,
                 }
-                self._audit_ownership_change(
-                    handler, operator, store_id, store_name, target_user_id,
-                    "noop", {
-                        "previous_owner": result["previous_owner"],
-                        "new_owner": result["new_owner"],
-                        "unchanged": True,
-                        "reason": "归属成员未发生变化",
-                        "record_counts": result["record_counts"],
-                    })
+                _audit("noop", {
+                    "previous_owner": result["previous_owner"],
+                    "new_owner": result["new_owner"],
+                    "unchanged": True,
+                    "reason": "归属成员未发生变化",
+                    "record_counts": result["record_counts"],
+                })
                 self.registry.get(store_id).op_log.append(
                     "store.ownership_change",
-                    detail={"previous_owner": result["previous_owner"],
+                    detail={"operation_id": operation_id,
+                            "previous_owner": result["previous_owner"],
                             "new_owner": result["new_owner"],
                             "operator_role": operator.get("role"),
                             "unchanged": True},
@@ -3180,15 +3708,49 @@ class ReconcileServer:
         backup = None
         try:
             backup = self._backup_ownership_change(store_id)
+            # 写入事务状态文件, 供崩溃恢复识别
+            txn_path = os.path.join(backup["backup_dir"], "txn.json")
+            with open(txn_path, "w", encoding="utf-8") as f:
+                json.dump({"operation_id": operation_id,
+                           "store_id": store_id,
+                           "started_at": started_at,
+                           "phase": "backup_done",
+                           "prev_owner_id": prev_owner_id,
+                           "target_user_id": target_user_id}, f,
+                          ensure_ascii=False, indent=2)
             result = self.user_manager.transfer_store_ownership(
-                operator, store_id, target_user_id)
-        except (AuthError, ApiError) as e:
+                operator, store_id, target_user_id,
+                expected_updated_at=expected_updated_at)
+        except AuthError as e:
+            rollback_failed = e.extra.get("rollback_failed", False)
+            if backup is not None:
+                if rollback_failed:
+                    # 回滚失败: 保留备份目录供手动恢复, 更新 txn.json
+                    try:
+                        with open(txn_path, "w", encoding="utf-8") as f:
+                            json.dump({"operation_id": operation_id,
+                                       "store_id": store_id,
+                                       "started_at": started_at,
+                                       "phase": "rollback_failed",
+                                       "prev_owner_id": prev_owner_id,
+                                       "target_user_id": target_user_id,
+                                       "error": str(e)}, f,
+                                      ensure_ascii=False, indent=2)
+                    except OSError:
+                        pass
+                else:
+                    shutil.rmtree(backup["backup_dir"], ignore_errors=True)
+            _audit("error", {"reason": str(e),
+                             "previous_owner_id": prev_owner_id,
+                             "rollback_performed": True,
+                             "rollback_succeeded": not rollback_failed})
+            raise
+        except ApiError as e:
             if backup is not None:
                 shutil.rmtree(backup["backup_dir"], ignore_errors=True)
-            self._audit_ownership_change(
-                handler, operator, store_id, store_name, target_user_id,
-                "error", {"reason": str(e),
-                          "previous_owner_id": prev_owner_id})
+            _audit("error", {"reason": str(e),
+                              "previous_owner_id": prev_owner_id,
+                              "rollback_performed": False})
             raise
         # 原归属用户绑定该店的活跃会话立即失效
         revoked = (self.sessions.revoke_user(prev_owner_id)
@@ -3205,31 +3767,44 @@ class ReconcileServer:
             diff = {k: [inventory_before[k], inventory_after.get(k)]
                     for k in inventory_before
                     if inventory_before[k] != inventory_after.get(k)}
-            self._audit_ownership_change(
-                handler, operator, store_id, store_name, target_user_id,
-                "error", {
-                    "reason": "迁移核对失败，已从备份恢复店铺归属",
-                    "previous_owner": result.get("previous_owner"),
-                    "new_owner": result.get("new_owner"),
-                    "backup_dir": backup["backup_dir"],
-                    "recovered": True, "diff": diff})
+            _audit("error", {
+                "reason": "迁移核对失败，已从备份恢复店铺归属",
+                "previous_owner": result.get("previous_owner"),
+                "new_owner": result.get("new_owner"),
+                "backup_dir": backup["backup_dir"],
+                "recovered": True, "diff": diff,
+                "rollback_performed": True,
+                "rollback_succeeded": True})
             raise ApiError("迁移核对失败，已从备份恢复店铺归属，请重试",
                            code=500, http_status=500)
         counts = self._store_record_counts(self.registry.get(store_id))
         result["record_counts"] = counts
         result["data_preserved"] = True
         result["unchanged"] = False
-        self._audit_ownership_change(
-            handler, operator, store_id, store_name, target_user_id,
-            "success", {
-                "previous_owner": result.get("previous_owner"),
-                "new_owner": result.get("new_owner"),
-                "record_counts": counts,
-                "backup_dir": backup["backup_dir"],
-                "revoked_sessions": revoked})
+        result["operation_id"] = operation_id
+        # 更新事务状态为完成
+        try:
+            with open(txn_path, "w", encoding="utf-8") as f:
+                json.dump({"operation_id": operation_id,
+                           "store_id": store_id,
+                           "started_at": started_at,
+                           "completed_at": datetime.now().isoformat(),
+                           "phase": "completed",
+                           "prev_owner_id": prev_owner_id,
+                           "target_user_id": target_user_id}, f,
+                          ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+        _audit("success", {
+            "previous_owner": result.get("previous_owner"),
+            "new_owner": result.get("new_owner"),
+            "record_counts": counts,
+            "backup_dir": backup["backup_dir"],
+            "revoked_sessions": revoked})
         self.registry.get(store_id).op_log.append(
             "store.ownership_change",
-            detail={"store_id": store_id,
+            detail={"operation_id": operation_id,
+                    "store_id": store_id,
                     "store_name": store_name,
                     "operator_role": operator.get("role"),
                     "previous_owner": result.get("previous_owner"),
@@ -3284,7 +3859,7 @@ class ReconcileServer:
     }
 
     def _handle_store_create(self, handler, body):
-        """创建新店铺并绑定归属成员（仅管理员; 一对多追加绑定）"""
+        """创建新店铺并绑定归属成员（仅管理员可创建; 一对多追加绑定）"""
         _, operator = self._require_admin(handler)
         store = self.user_manager.create_store(
             operator, body.get("name"), body.get("owner_user_id"))

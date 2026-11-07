@@ -52,13 +52,32 @@ function fmtMoney(v) {
   if (v === null || v === undefined || v === "") return "—";
   const n = Number(v);
   if (Number.isNaN(n)) return String(v);
-  return n.toFixed(2);
+  return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function fmtMoneyYuan(v) {
   if (v === null || v === undefined || v === "") return "—";
   const n = Number(v);
   if (Number.isNaN(n)) return String(v);
-  return `¥${n.toFixed(2)}`;
+  return `¥${n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function copyText(text) {
+  const value = String(text == null ? "" : text);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(value).then(
+      () => toast("已复制：" + value, "success", 2000),
+      () => toast("复制失败，请手动复制", "error", 2000)
+    );
+  } else {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); toast("已复制：" + value, "success", 2000); }
+    catch (e) { toast("复制失败，请手动复制", "error", 2000); }
+    ta.remove();
+  }
 }
 function fmtTime(v) {
   if (!v) return "—";

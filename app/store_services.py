@@ -16,6 +16,7 @@ from datetime import datetime
 
 from . import config
 from .ad_expense_service import AdExpenseService
+from .other_expense_service import OtherExpenseService
 from .data_schemas import BUSINESS_FILES, now_iso
 from .import_service import ImportService
 from .json_repository import JsonRepository
@@ -51,6 +52,7 @@ class StoreServices:
         self.supplier_queries = SupplierCostQueryService(self.repo, self.op_log)
         self.anomaly_queries = AnomalyQueryService(self.repo, self.op_log)
         self.ad_expenses = AdExpenseService(self.repo, self.op_log)
+        self.other_expenses = OtherExpenseService(self.repo, self.op_log)
 
     def ensure_all(self):
         return self.repo.ensure_all()

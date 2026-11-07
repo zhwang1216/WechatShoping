@@ -203,6 +203,8 @@ class TestProfitCostSummary(unittest.TestCase):
         self.assertEqual(stat["pending_confirmation"], 0)
         self.assertEqual(stat["needs_review"], 0)
         self.assertEqual(stat["profit_total"], "174.45")
+        self.assertEqual(stat["technical_service_fee"], "5.00")
+        self.assertIsInstance(stat["technical_service_fee"], str)
 
     # ---------- V2 / Q1 红线：综合成本 = 订单级 composite_cost 累加 ----------
     def test_02_composite_from_total_amount(self):
@@ -427,6 +429,7 @@ class TestProfitCostSummary(unittest.TestCase):
         self.assertEqual(float(summary[22]), float(stat["product_cost_total"]))
         self.assertEqual(float(summary[23]), float(stat["courier_fee_total"]))
         self.assertEqual(float(summary[24]), float(stat["composite_cost_total"]))
+        self.assertEqual(float(summary[12]), float(stat["technical_service_fee"]))
 
     # ---------- V11 规则4 / V7：多店导出仅一个聚合合计行 ----------
     def test_10_multi_store_export_summary(self):
@@ -449,6 +452,8 @@ class TestProfitCostSummary(unittest.TestCase):
         self.assertEqual(float(summary[22]), float(agg["product_cost_total"]))
         self.assertEqual(float(summary[23]), float(agg["courier_fee_total"]))
         self.assertEqual(float(summary[24]), float(agg["composite_cost_total"]))
+        self.assertEqual(float(summary[12]), float(agg["technical_service_fee"]))
+        self.assertEqual(agg["technical_service_fee"], "5.00")
         self.assertIsInstance(summary[22], (int, float))
         # 待核对注记与聚合计数一致
         self.assertIn("产品成本待核对 1 单", summary[3])

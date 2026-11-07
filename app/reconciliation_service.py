@@ -12,7 +12,11 @@
 4. 重复风险：总金额在多行重复出现时禁止直接重复累加，先识别再按粒度处理；
    疑似订单级重复在粒度经人工确认前不得用于最终利润计算（usable_for_profit=False）。
 5. 人工确认：记录操作人、时间、匹配规则与修改前后值；重跑对账与重新导入均不覆盖。
-6. 异常：未匹配订单(RC-001)、未匹配成本(RC-002)、总金额重复(RC-007)、
+   未匹配订单可另录货品+快递作为总成本；一旦后续供应商成本入库并匹配成功，
+   以入库数据为准，丢弃这笔手工金额。
+6. 对账范围：仅商品发货状态为「已发货」的订单进入对账统计（无商品发货列时按订单状态
+   排除未发货/待核对，与历史数据兼容）；未发货/部分发货等不生成对账记录。
+7. 异常：未匹配订单(RC-001)、未匹配成本(RC-002)、总金额重复(RC-007)、
    数量差异(RC-005)、成本缺失(RC-006)、金额差异(RC-012)、多对一、疑似匹配待确认、
    人工关系失效；异常禁止静默丢弃，自动关闭必须留痕。
 """
@@ -24,9 +28,13 @@ from decimal import Decimal
 from openpyxl import Workbook
 
 from .data_schemas import now_iso
-from .errors import (ManualMatchConflictError, OrderNotFoundError,
-                     ReconcileServiceError, SupplierRecordNotFoundError)
+from .errors import (FieldNotModifiableError, InvalidFieldValueError,
+                     ManualMatchConflictError, ModifyRejectedError,
+                     OrderNotFoundError, ReconcileServiceError,
+                     SupplierRecordNotFoundError)
+from .excel_export import append_row
 from .normalizer import INVISIBLE_CHARS, money_str
+from .profit_service import is_reconciliation_scope
 from .refund_view import order_level_amount
 from .time_range import in_range
 
@@ -70,6 +78,76 @@ ANOMALY_TYPE_LABELS = {
     "MANUAL_MATCH_BROKEN": "人工匹配关系失效",
 }
 RECON_ANOMALY_TYPES = set(ANOMALY_TYPE_LABELS)
+
+MODIFIABLE_ORDER_FIELDS = {
+    "order_time": {"label": "下单时间", "type": "iso_time"},
+    "order_status": {"label": "订单状态", "type": "status"},
+    "product.quantity": {"label": "商品数量", "type": "positive_int"},
+    "product.actual_total_price": {"label": "实际总价", "type": "nonneg_amount"},
+    "amounts.actual_received_amount": {"label": "实收金额", "type": "nonneg_amount"},
+    "amounts.product_total": {"label": "商品总金额", "type": "nonneg_amount"},
+    "amounts.shipping_fee": {"label": "运费", "type": "amount_or_null"},
+}
+MODIFIABLE_COST_FIELDS = {
+    "cost_breakdown.total_amount": {"label": "成本总金额", "type": "nonneg_amount"},
+    "cost_breakdown.product_supply_cost": {"label": "供货成本", "type": "nonneg_amount"},
+    "cost_breakdown.courier_fee": {"label": "快递费", "type": "amount_or_null"},
+    "supplier_actual_received": {"label": "供应商实收", "type": "nonneg_amount"},
+    "product.quantity": {"label": "供货数量", "type": "positive_int"},
+}
+SYSTEM_FIELD_BLACKLIST = {
+    "order_id", "record_id", "batch_id", "business_key", "store_id",
+    "main_order_id", "supplier_order_id", "source_record_id",
+    "reconciliation_id", "match_status", "match_method",
+    "exception_codes", "preserved_manual",
+}
+_VALID_STATUSES = {
+    "已发货", "已完成", "已关闭", "待发货", "待备货", "备货中",
+    "已支付", "已付款", "待付款", "待支付", "退款中", "已退款",
+    "部分退款", "退款失败", "",
+}
+
+
+def _validate_field(field_path, value):
+    """校验字段是否可修改且值合法，返回 (ok, error_message)"""
+    spec = MODIFIABLE_ORDER_FIELDS.get(field_path) \
+        or MODIFIABLE_COST_FIELDS.get(field_path)
+    if field_path in SYSTEM_FIELD_BLACKLIST:
+        return False, f"字段 {field_path} 为系统关键字段，不可修改"
+    if spec is None:
+        return False, f"字段 {field_path} 不在可修改白名单内"
+    vtype = spec["type"]
+    if vtype == "positive_int":
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return False, f"字段 {field_path} 要求正整数，收到 {value!r}"
+    elif vtype == "nonneg_amount":
+        if value is None:
+            return False, f"字段 {field_path} 不可为空"
+        try:
+            d = Decimal(str(value))
+        except Exception:
+            return False, f"字段 {field_path} 要求非负金额，收到 {value!r}"
+        if d < 0:
+            return False, f"字段 {field_path} 要求非负金额，收到 {value!r}"
+    elif vtype == "amount_or_null":
+        if value is not None:
+            try:
+                d = Decimal(str(value))
+            except Exception:
+                return False, f"字段 {field_path} 要求金额或空，收到 {value!r}"
+            if d < 0:
+                return False, f"字段 {field_path} 要求非负金额或空，收到 {value!r}"
+    elif vtype == "iso_time":
+        if not isinstance(value, str) or not value.strip():
+            return False, f"字段 {field_path} 要求 ISO 时间字符串"
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return False, f"字段 {field_path} 不是合法 ISO 时间: {value!r}"
+    elif vtype == "status":
+        if not isinstance(value, str) or value not in _VALID_STATUSES:
+            return False, f"字段 {field_path} 不是合法订单状态: {value!r}"
+    return True, None
 
 
 def _dec(s):
@@ -126,14 +204,21 @@ class ReconciliationService:
                     seen_norm.add((rid, nk))
                     normalized_index.setdefault(nk, []).append(c)
 
-        scope_order_ids = set()
+        time_scope_order_ids = set()
+        reconcile_scope_order_ids = set()
         for oid, wlines in orders_by_id.items():
             ot = next((l.get("order_time") for l in wlines if l.get("order_time")), None)
             if start and (ot is None or ot < start):
                 continue
             if end and (ot is None or ot > end):
                 continue
-            scope_order_ids.add(oid)
+            time_scope_order_ids.add(oid)
+            first_status = next((l.get("order_status") for l in wlines
+                                 if l.get("order_status")), None)
+            first_ship = next((l.get("ship_status") for l in wlines
+                               if l.get("ship_status")), None)
+            if is_reconciliation_scope(first_status, first_ship):
+                reconcile_scope_order_ids.add(oid)
 
         results = []
         matched_cost_ids = set()
@@ -160,7 +245,7 @@ class ReconciliationService:
 
         cost_by_id = {c.get("record_id"): c for c in costs}
 
-        for oid in sorted(scope_order_ids):
+        for oid in sorted(reconcile_scope_order_ids):
             wlines = orders_by_id[oid]
             wx_ids = [l.get("record_id") for l in wlines if l.get("record_id")]
 
@@ -247,16 +332,40 @@ class ReconciliationService:
                     "related_record_ids": wx_ids,
                 })
                 inherit_legacy(rec, oid)
+                self._inherit_unmatched_manual_cost(rec, oid, old_by_order)
                 for a in anoms:
                     add_anom(a["order_id"], a["exception_type"], a["severity"],
                              a["message"], a.get("related_record_ids"))
                 rec["exception_codes"] = sorted({a["exception_type"] for a in anoms})
                 results.append(rec)
 
-        # 范围外订单：保留已有记录（人工关系与自动结果均保留），其成本引用继续占用
+        # 时间范围外订单：保留已有记录。若该单只有手工成本、且现在能匹配到入库的供应商成本，
+        # 以入库数据重建匹配并丢掉手工金额。（未发货等不对账订单不保留，重跑时清除旧记录。）
         for r in existing:
-            if (r.get("record_type") == "order_match" and r.get("order_id")
-                    and r["order_id"] not in scope_order_ids):
+            if not (r.get("record_type") == "order_match" and r.get("order_id")
+                    and r["order_id"] not in time_scope_order_ids):
+                continue
+            oid = r["order_id"]
+            replaced = False
+            if (r.get("manual_cost") and r.get("match_status") == "unmatched_order"
+                    and not r.get("supplier_record_ids")):
+                wlines = orders_by_id.get(oid) or []
+                sup_records, method, rule_hit = self._auto_match(
+                    oid, main_index, sub_index, normalized_index)
+                if method and wlines:
+                    rec, anoms = self._build_match_record(
+                        oid, wlines, sup_records, method=method,
+                        status="matched", confidence="high", recon_id=recon_id,
+                        rule_hit=rule_hit)
+                    inherit_legacy(rec, oid)
+                    results.append(rec)
+                    matched_cost_ids.update(
+                        x.get("record_id") for x in sup_records)
+                    for a in anoms:
+                        add_anom(a["order_id"], a["exception_type"], a["severity"],
+                                 a["message"], a.get("related_record_ids"))
+                    replaced = True
+            if not replaced:
                 results.append(r)
                 matched_cost_ids.update(r.get("supplier_record_ids") or [])
 
@@ -318,7 +427,7 @@ class ReconciliationService:
         self.repo.update("anomalies", repl_anomalies)
 
         summary = self._stats_of(results)
-        summary["wechat_orders"] = len(scope_order_ids)
+        summary["wechat_orders"] = len(reconcile_scope_order_ids)
         status = "completed_with_exceptions" if fresh else "completed"
         self.op_log.append("reconciliation.run", detail={
             "reconciliation_id": recon_id, "start": start, "end": end,
@@ -473,13 +582,505 @@ class ReconciliationService:
         }, operator=operator)
         return rec
 
+    # ==================== 人工修改业务字段 ====================
+    def _assert_modifiable(self, order_id):
+        """锁定校验：已匹配订单拒绝人工修改"""
+        results = self.repo.read("reconciliation_results")["records"]
+        rec = next((r for r in results
+                    if r.get("record_type") == "order_match"
+                    and r.get("record_id") == "match_" + order_id), None)
+        if rec is None:
+            raise OrderNotFoundError(f"对账记录不存在: {order_id}")
+        status = rec.get("match_status")
+        if status in ("matched", "manual_confirmed"):
+            raise ModifyRejectedError(
+                "该订单已匹配导入数据，不能手动修改。",
+                data={"order_id": order_id, "match_status": status})
+
+    def _apply_field_modifications(self, order_id, fields, cost_updates, operator):
+        """逐字段校验并写入业务字段，返回 (before_snapshot, after_snapshot, changed_fields)
+
+        订单字段写入 orders 表，成本字段按 supplier_record_id 写入 supplier_costs 表。
+        """
+        orders = self.repo.read("orders")["records"]
+        wlines = [o for o in orders if o.get("order_id") == order_id]
+        costs = self.repo.read("supplier_costs")["records"]
+        results = self.repo.read("reconciliation_results")["records"]
+        rec = next((r for r in results
+                    if r.get("record_type") == "order_match"
+                    and r.get("record_id") == "match_" + order_id), None)
+        if rec is None:
+            raise OrderNotFoundError(f"对账记录不存在: {order_id}")
+
+        before = self._snapshot(rec)
+        changed = []
+        now = now_iso()
+        order_changed = False
+        cost_changed = False
+
+        for field_path, new_value in fields.items():
+            ok, err = _validate_field(field_path, new_value)
+            if not ok:
+                if field_path in SYSTEM_FIELD_BLACKLIST:
+                    raise FieldNotModifiableError(err)
+                raise InvalidFieldValueError(err)
+
+            top, _, sub = field_path.partition(".")
+            if sub:
+                container = (wlines[0] if wlines else {})
+                old_val = (container.get(top) or {}).get(sub)
+                for wl in wlines:
+                    wl.setdefault(top, {})[sub] = new_value
+            else:
+                container = wlines[0] if wlines else {}
+                old_val = container.get(top)
+                for wl in wlines:
+                    wl[top] = new_value
+
+            changed.append({
+                "field": field_path,
+                "before": old_val,
+                "after": new_value,
+            })
+            order_changed = True
+
+        valid_sids = set(rec.get("supplier_record_ids") or [])
+        cost_by_id = {c.get("record_id"): c for c in costs}
+        for cu in (cost_updates or []):
+            field_path = cu.get("field")
+            sid = cu.get("supplier_record_id")
+            new_value = cu.get("value")
+            if sid not in valid_sids:
+                raise SupplierRecordNotFoundError(
+                    f"供应商成本记录 {sid} 不属于订单 {order_id}")
+            ok, err = _validate_field(field_path, new_value)
+            if not ok:
+                if field_path in SYSTEM_FIELD_BLACKLIST:
+                    raise FieldNotModifiableError(err)
+                raise InvalidFieldValueError(err)
+
+            sc = cost_by_id.get(sid)
+            if sc is None:
+                raise SupplierRecordNotFoundError(
+                    f"供应商成本记录不存在: {sid}")
+
+            top, _, sub = field_path.partition(".")
+            if sub:
+                old_val = (sc.get(top) or {}).get(sub)
+                sc.setdefault(top, {})[sub] = new_value
+            else:
+                old_val = sc.get(top)
+                sc[top] = new_value
+
+            changed.append({
+                "field": field_path,
+                "supplier_record_id": sid,
+                "before": old_val,
+                "after": new_value,
+            })
+            cost_changed = True
+
+        if order_changed and wlines:
+            def repl_orders(d):
+                d["records"] = orders
+                d["updated_at"] = now
+            self.repo.update("orders", repl_orders)
+
+        if cost_changed:
+            def repl_costs(d):
+                d["records"] = costs
+                d["updated_at"] = now
+            self.repo.update("supplier_costs", repl_costs)
+
+        self._mark_manual(rec, [c["field"] for c in changed], operator)
+        rec["updated_at"] = now
+
+        after = self._snapshot(rec)
+        return before, after, changed
+
+    def manual_modify(self, order_id, fields, reason, operator="admin", cost_updates=None):
+        """人工修改异常订单业务字段并重新校验
+
+        fields 修改订单字段（写入 orders 表）；
+        cost_updates 修改成本字段（按 supplier_record_id 写入 supplier_costs 表）。
+        两者至少一个非空，向后兼容 cost_updates=None。
+        """
+        if fields is None:
+            fields = {}
+        if not isinstance(fields, dict):
+            raise InvalidFieldValueError("fields 必须是字典")
+        if cost_updates is None:
+            cost_updates = []
+        if not isinstance(cost_updates, list):
+            raise InvalidFieldValueError("cost_updates 必须是列表")
+        if not fields and not cost_updates:
+            raise InvalidFieldValueError("fields 与 cost_updates 至少一个非空")
+        if not reason or not isinstance(reason, str):
+            raise InvalidFieldValueError("请提供修改原因")
+
+        orders = self.repo.read("orders")["records"]
+        if not any(o.get("order_id") == order_id for o in orders):
+            raise OrderNotFoundError(f"微信订单不存在: {order_id}")
+
+        try:
+            self._assert_modifiable(order_id)
+        except ModifyRejectedError:
+            self.op_log.append("modify_rejected", detail={
+                "order_id": order_id,
+                "reason": "已匹配订单拒绝人工修改",
+            }, operator=operator)
+            raise
+
+        before, after, changed = self._apply_field_modifications(
+            order_id, fields, cost_updates, operator)
+
+        recon = self.run_reconciliation(operator=operator)
+
+        results = self.repo.read("reconciliation_results")["records"]
+        new_rec = next((r for r in results
+                        if r.get("record_type") == "order_match"
+                        and r.get("record_id") == "match_" + order_id), None)
+        if new_rec:
+            self._mark_manual(new_rec, [c["field"] for c in changed], operator)
+            new_rec["updated_at"] = now_iso()
+            new_results = [r for r in results if not (
+                r.get("record_type") == "order_match"
+                and r.get("record_id") == "match_" + order_id)]
+            new_results.append(new_rec)
+
+            def repl_results(d):
+                d["records"] = new_results
+                d["updated_at"] = now_iso()
+            self.repo.update("reconciliation_results", repl_results)
+
+            if new_rec.get("match_status") in ("matched", "manual_confirmed") \
+                    and new_rec.get("manual_modified_fields"):
+                self.op_log.append("match_locked", detail={
+                    "order_id": order_id,
+                    "match_status": new_rec.get("match_status"),
+                    "locked_fields": new_rec.get("manual_modified_fields"),
+                }, operator=operator)
+
+        self.op_log.append("manual_modify", detail={
+            "order_id": order_id,
+            "reason": reason,
+            "before": before,
+            "after": after,
+            "changed_fields": changed,
+        }, operator=operator)
+
+        return new_rec or rec
+
+    def manual_cost_entry(self, supplier_record_id, total_amount,
+                          reason=None, operator="admin"):
+        """未匹配供应商成本记录手动录入综合成本
+
+        校验链: 记录不存在 404 → 已匹配拒绝 403 → 金额非法 400;
+        保留原始导入值 original_total_amount（仅首次设置）;
+        更新 cost_breakdown.total_amount 为人工录入值;
+        添加 manual_cost_modified_at/by/source 标记;
+        不改变 match_status，不自动认定匹配成功。
+        """
+        costs = self.repo.read("supplier_costs")["records"]
+        sc = next((c for c in costs if c.get("record_id") == supplier_record_id),
+                   None)
+        if sc is None:
+            raise SupplierRecordNotFoundError(
+                f"供应商成本记录不存在: {supplier_record_id}")
+
+        results = self.repo.read("reconciliation_results")["records"]
+        match_status = "unmatched_supplier"
+        for r in results:
+            if (r.get("record_type") == "order_match"
+                    and supplier_record_id in (r.get("supplier_record_ids") or [])
+                    and r.get("match_status") in ("matched", "manual_confirmed")):
+                match_status = r["match_status"]
+                break
+        if match_status in ("matched", "manual_confirmed"):
+            raise ModifyRejectedError(
+                "该记录已匹配订单，不能手动修改综合成本。",
+                data={"supplier_record_id": supplier_record_id,
+                      "match_status": match_status})
+
+        if not isinstance(total_amount, str):
+            raise InvalidFieldValueError("综合成本必须为字符串")
+        total_amount = total_amount.strip()
+        if not total_amount:
+            raise InvalidFieldValueError("综合成本不能为空")
+        try:
+            amount = Decimal(total_amount)
+        except (ArithmeticError, ValueError):
+            raise InvalidFieldValueError("综合成本不是合法金额")
+        if amount < 0:
+            raise InvalidFieldValueError("综合成本不能为负数")
+        quantized = str(amount.quantize(Decimal("0.01")))
+        if Decimal(quantized) != amount:
+            raise InvalidFieldValueError("综合成本最多保留两位小数")
+
+        breakdown = sc.get("cost_breakdown") or {}
+        old_value = breakdown.get("total_amount")
+        if "original_total_amount" not in breakdown:
+            breakdown["original_total_amount"] = old_value
+        breakdown["total_amount"] = quantized
+        sc["cost_breakdown"] = breakdown
+        now = now_iso()
+        sc["manual_cost_modified_at"] = now
+        sc["manual_cost_modified_by"] = (
+            operator.get("username") if isinstance(operator, dict)
+            else operator)
+        sc["manual_cost_source"] = "manual"
+        sc["updated_at"] = now
+
+        def repl_costs(d):
+            d["records"] = costs
+            d["updated_at"] = now
+        self.repo.update("supplier_costs", repl_costs)
+
+        self.op_log.append("supplier.manual_cost", detail={
+            "supplier_record_id": supplier_record_id,
+            "reason": reason,
+            "before": old_value,
+            "after": quantized,
+            "match_status": match_status,
+        }, operator=operator)
+
+        return {
+            "supplier_record_id": supplier_record_id,
+            "old_total_amount": old_value,
+            "new_total_amount": quantized,
+            "original_total_amount": breakdown.get("original_total_amount"),
+            "manual_cost_modified_at": now,
+            "manual_cost_modified_by": sc["manual_cost_modified_by"],
+            "match_status": match_status,
+        }
+
+    @staticmethod
+    def _parse_nonneg_money(label, value):
+        """非负金额字符串，最多两位小数。"""
+        if not isinstance(value, str):
+            raise InvalidFieldValueError(f"{label}必须为字符串")
+        text = value.strip()
+        if not text:
+            raise InvalidFieldValueError(f"{label}不能为空")
+        try:
+            amount = Decimal(text)
+        except (ArithmeticError, ValueError):
+            raise InvalidFieldValueError(f"{label}不是合法金额")
+        if amount < 0:
+            raise InvalidFieldValueError(f"{label}不能为负数")
+        quantized = str(amount.quantize(Decimal("0.01")))
+        if Decimal(quantized) != amount:
+            raise InvalidFieldValueError(f"{label}最多保留两位小数")
+        return quantized
+
+    @staticmethod
+    def _apply_manual_order_cost(rec, manual):
+        """把手工货品+快递写进对账成本汇总，供列表和利润读取。"""
+        cost = dict(rec.get("cost") or {})
+        total = manual["total_amount"]
+        cost["total_amount"] = total
+        cost["raw_line_sum"] = total
+        cost["dedup_amount"] = "0.00"
+        cost["usable_for_profit"] = True
+        cost["missing_amount_lines"] = 0
+        cost["duplicate_total_amount_risk"] = False
+        cost["order_level_dedup_pending"] = False
+        cost["granularity"] = "manual"
+        cost["line_count"] = 0
+        cost["lines"] = []
+        rec["cost"] = cost
+        rec["manual_cost"] = dict(manual)
+
+    @staticmethod
+    def _inherit_unmatched_manual_cost(rec, order_id, old_by_order):
+        """仍未匹配时保留手工成本。已匹配到入库成本的记录不继承。"""
+        if rec.get("match_status") != "unmatched_order":
+            return
+        if rec.get("supplier_record_ids"):
+            return
+        old = old_by_order.get(order_id) or {}
+        manual = old.get("manual_cost") or {}
+        if manual.get("total_amount") is None:
+            return
+        ReconciliationService._apply_manual_order_cost(rec, manual)
+
+    def set_unmatched_order_cost(self, order_id, product_amount, courier_amount,
+                                 operator="admin"):
+        """未匹配订单录入总成本 = 货品 + 快递。"""
+        saved = self.set_unmatched_order_costs([{
+            "order_id": order_id,
+            "product_amount": product_amount,
+            "courier_amount": courier_amount,
+        }], operator)
+        return saved[0]
+
+    def validate_unmatched_order_costs(self, items):
+        """只校验，不写入。批量保存前用来确认全部订单都能改。"""
+        self._plan_unmatched_order_costs(items, operator="admin")
+
+    def set_unmatched_order_costs(self, items, operator="admin"):
+        """一次写入多笔未匹配订单的货品+快递。任一笔不合法则整批不写。
+
+        不创建供应商记录，匹配状态保持未匹配。
+        之后若供应商成本入库并匹配到其中某单，重跑对账时该单以入库金额为准。
+        """
+        planned, results = self._plan_unmatched_order_costs(items, operator)
+        if not planned:
+            return []
+        now = planned[0]["manual"]["modified_at"]
+
+        def repl(d):
+            d["records"] = results
+            d["updated_at"] = now
+        self.repo.update("reconciliation_results", repl)
+        self.op_log.append("reconciliation.manual_order_cost_batch", detail={
+            "count": len(planned),
+            "orders": [{"order_id": p["order_id"], "before": p["before"],
+                        "after": p["manual"]["total_amount"]} for p in planned],
+        }, operator=operator)
+        return [p["summary"] for p in planned]
+
+    def _plan_unmatched_order_costs(self, items, operator):
+        if not isinstance(items, list) or not items:
+            raise InvalidFieldValueError("请至少提供一条订单成本")
+        if len(items) > 200:
+            raise InvalidFieldValueError("一次最多修改 200 条")
+        orders = self.repo.read("orders")["records"]
+        order_ids = {o.get("order_id") for o in orders if o.get("order_id")}
+        results = self.repo.read("reconciliation_results")["records"]
+        by_order = {}
+        for rec in results:
+            if rec.get("record_type") == "order_match" and rec.get("order_id"):
+                by_order[rec["order_id"]] = rec
+        who = (operator.get("username") if isinstance(operator, dict)
+               else operator)
+        now = now_iso()
+        seen = set()
+        planned = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise InvalidFieldValueError("订单成本条目格式不正确")
+            order_id = item.get("order_id")
+            if not isinstance(order_id, str) or not order_id:
+                raise InvalidFieldValueError("订单号不能为空")
+            if order_id in seen:
+                raise InvalidFieldValueError(f"订单 {order_id} 在本次提交中重复")
+            seen.add(order_id)
+            if order_id not in order_ids:
+                raise OrderNotFoundError(f"微信订单不存在: {order_id}")
+            rec = by_order.get(order_id)
+            if rec is None:
+                raise ModifyRejectedError(
+                    f"订单 {order_id} 还没有对账记录，请先执行对账",
+                    data={"order_id": order_id})
+            if rec.get("match_status") != "unmatched_order" \
+                    or rec.get("supplier_record_ids"):
+                raise ModifyRejectedError(
+                    f"订单 {order_id} 已有入库成本，不能再手工修改总成本",
+                    data={"order_id": order_id,
+                          "match_status": rec.get("match_status")})
+            try:
+                product = self._parse_nonneg_money(
+                    "货品成本", item.get("product_amount"))
+                courier = self._parse_nonneg_money(
+                    "快递费", item.get("courier_amount"))
+            except InvalidFieldValueError as e:
+                raise InvalidFieldValueError(f"订单 {order_id}：{e}")
+            total = money_str(Decimal(product) + Decimal(courier))
+            before = (rec.get("manual_cost") or {}).get("total_amount")
+            manual = {
+                "product_amount": product,
+                "courier_amount": courier,
+                "total_amount": total,
+                "source": "manual",
+                "modified_at": now,
+                "modified_by": who,
+            }
+            planned.append({
+                "order_id": order_id,
+                "rec": rec,
+                "before": before,
+                "manual": manual,
+                "summary": {
+                    "order_id": order_id,
+                    "match_status": rec.get("match_status"),
+                    "product_amount": product,
+                    "courier_amount": courier,
+                    "total_amount": total,
+                    "modified_at": now,
+                    "modified_by": who,
+                },
+            })
+        for item in planned:
+            rec = item["rec"]
+            self._apply_manual_order_cost(rec, item["manual"])
+            self._mark_manual(
+                rec, ["manual_cost.product_amount", "manual_cost.courier_amount",
+                      "manual_cost.total_amount"], operator)
+            rec["updated_at"] = now
+        return planned, results
+
+    def get_modifiable_fields(self, order_id):
+        """返回订单匹配状态与可修改字段定义"""
+        orders = self.repo.read("orders")["records"]
+        wlines = [o for o in orders if o.get("order_id") == order_id]
+        if not wlines:
+            raise OrderNotFoundError(f"微信订单不存在: {order_id}")
+
+        results = self.repo.read("reconciliation_results")["records"]
+        rec = next((r for r in results
+                    if r.get("record_type") == "order_match"
+                    and r.get("record_id") == "match_" + order_id), None)
+        match_status = rec.get("match_status") if rec else None
+        modifiable = match_status in (None, "unmatched_order", "suspected",
+                                      "unmatched_supplier")
+
+        def field_info(field_path, spec):
+            top, _, sub = field_path.partition(".")
+            wl = wlines[0] if wlines else {}
+            current = (wl.get(top) or {}).get(sub) if sub else wl.get(top)
+            return {
+                "field": field_path,
+                "label": spec["label"],
+                "type": spec["type"],
+                "current_value": current,
+            }
+
+        order_fields = [field_info(f, s) for f, s in MODIFIABLE_ORDER_FIELDS.items()]
+        cost_fields = []
+        if rec and rec.get("supplier_record_ids"):
+            costs = self.repo.read("supplier_costs")["records"]
+            by_id = {c.get("record_id"): c for c in costs}
+            for sid in rec["supplier_record_ids"]:
+                sc = by_id.get(sid)
+                if sc:
+                    for f, s in MODIFIABLE_COST_FIELDS.items():
+                        top, _, sub = f.partition(".")
+                        current = (sc.get(top) or {}).get(sub) if sub else sc.get(top)
+                        cost_fields.append({
+                            "field": f,
+                            "label": s["label"],
+                            "type": s["type"],
+                            "current_value": current,
+                            "supplier_record_id": sid,
+                        })
+
+        return {
+            "order_id": order_id,
+            "match_status": match_status,
+            "modifiable": modifiable,
+            "order_fields": order_fields,
+            "cost_fields": cost_fields,
+            "system_fields": sorted(SYSTEM_FIELD_BLACKLIST),
+        }
+
     # ==================== 查询与导出 ====================
     def list_results(self, start=None, end=None, order_id=None, match_status=None,
                      anomaly_type=None, page=1, size=50):
-        records = [r for r in self.repo.read("reconciliation_results")["records"]
+        records = [self._init_data_source(r) for r in self.repo.read("reconciliation_results")["records"]
                    if r.get("record_type") == "order_match"]
         rows = self._filter_rows(records, start=start, end=end, order_id=order_id,
-                                 match_status=match_status, anomaly_type=anomaly_type)
+                                  match_status=match_status, anomaly_type=anomaly_type)
         total = len(rows)
         start_idx = (page - 1) * size
         return {
@@ -490,7 +1091,7 @@ class ReconciliationService:
         }
 
     def export_excel(self, operator="admin", **filters):
-        records = [r for r in self.repo.read("reconciliation_results")["records"]
+        records = [self._init_data_source(r) for r in self.repo.read("reconciliation_results")["records"]
                    if r.get("record_type") == "order_match"]
         rows = self._filter_rows(records, **filters)
         if not rows:
@@ -533,9 +1134,9 @@ class ReconciliationService:
         wb = Workbook()
         ws = wb.active
         ws.title = "对账结果"
-        ws.append(headers)
+        append_row(ws, headers)
         for r in rows:
-            ws.append(row_of(r))
+            append_row(ws, row_of(r))
         for col in (6, 7, 8, 10, 11, 12):
             for cell in ws.iter_cols(min_col=col, max_col=col, min_row=2):
                 for c in cell:
@@ -797,6 +1398,43 @@ class ReconciliationService:
         }
         return checks, anomalies
 
+    def _init_data_source(self, rec):
+        """历史记录兼容兜底：为缺失数据来源字段填充默认值"""
+        if "data_source" not in rec:
+            rec["data_source"] = {}
+        if "manual_modified_fields" not in rec:
+            rec["manual_modified_fields"] = []
+        if "last_import_batch_id" not in rec:
+            rec["last_import_batch_id"] = None
+        if "last_modified_at" not in rec:
+            rec["last_modified_at"] = None
+        if "last_modified_by" not in rec:
+            rec["last_modified_by"] = None
+        return rec
+
+    def _mark_manual(self, rec, fields, operator):
+        """标记字段为人工修改"""
+        now = now_iso()
+        ds = rec.setdefault("data_source", {})
+        mf = rec.setdefault("manual_modified_fields", [])
+        for f in fields:
+            ds[f] = "manual"
+            if f not in mf:
+                mf.append(f)
+        rec["last_modified_at"] = now
+        rec["last_modified_by"] = operator
+
+    def _mark_import(self, rec, fields, batch_id):
+        """标记字段为导入数据覆盖，清除人工修改标记"""
+        ds = rec.setdefault("data_source", {})
+        mf = rec.setdefault("manual_modified_fields", [])
+        for f in fields:
+            ds[f] = "import"
+            if f in mf:
+                mf.remove(f)
+        if batch_id:
+            rec["last_import_batch_id"] = batch_id
+
     def _build_match_record(self, order_id, wlines, sup_records, method, status,
                             confidence, recon_id, rule_hit=None,
                             confirmed_granularity=None):
@@ -875,6 +1513,11 @@ class ReconciliationService:
                 "reviewer": None, "note": None, "history": [],
             },
             "preserved_manual": False,
+            "data_source": {},
+            "manual_modified_fields": [],
+            "last_import_batch_id": None,
+            "last_modified_at": None,
+            "last_modified_by": None,
             "created_at": now_iso(),
             "updated_at": now_iso(),
         }
