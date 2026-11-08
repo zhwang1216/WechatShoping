@@ -14,6 +14,8 @@ import hmac
 import json
 import os
 import secrets
+import shutil
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -177,6 +179,367 @@ class RegistrationRateLimiter:
             self._requests.setdefault(ip, []).append(time.monotonic())
 
 
+# ==================== JSON 结构兼容（登录读路径） ====================
+_DOC_META_KEYS = {"version", "updated_at"}
+
+
+def _read_json_file(path):
+    """读取 JSON 文件。不存在返回 None；内容损坏时抛出明确错误且不改写原文件。"""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise AuthError(
+            f"{os.path.basename(path)} 不是合法的 JSON，已保留原文件",
+            code=500, http_status=500,
+            extra={"data_file": os.path.basename(path),
+                   "value_type": "invalid_json"}) from e
+
+
+def _atomic_write_json(path, data):
+    """同目录临时文件写入并 fsync 后原子替换。失败时删除临时文件，不改原文件。"""
+    import tempfile
+    directory = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _backup_json_file(path):
+    """把原文件复制到同级 backups/ 并校验字节一致。校验失败不改原文件。"""
+    backup_dir = os.path.join(os.path.dirname(path), "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    dest = os.path.join(
+        backup_dir, f"{os.path.basename(path)}.pre_migrate.{stamp}")
+    shutil.copy2(path, dest)
+    with open(path, "rb") as src, open(dest, "rb") as bak:
+        if src.read() != bak.read():
+            raise AuthError(
+                f"{os.path.basename(path)} 备份校验失败，已中止且未修改原文件",
+                code=500, http_status=500,
+                extra={"data_file": os.path.basename(path),
+                       "value_type": "backup_mismatch"})
+    return dest
+
+
+def _restore_json_file(backup, path):
+    shutil.copy2(backup, path)
+    with open(backup, "rb") as src, open(path, "rb") as dst:
+        if src.read() != dst.read():
+            raise AuthError(
+                f"{os.path.basename(path)} 恢复原始文件失败",
+                code=500, http_status=500,
+                extra={"data_file": os.path.basename(path),
+                       "value_type": "restore_failed",
+                       "rollback_failed": True})
+
+
+def _log_migration(data_file, field, old_type, new_type, kept):
+    sys.stderr.write(
+        f"[data.migrate] file={data_file} field={field} "
+        f"from={old_type} to={new_type} kept={kept}\n")
+
+
+def _json_records(records):
+    return sorted(json.dumps(r, ensure_ascii=False, sort_keys=True)
+                  for r in records)
+
+
+def _records_equivalent(left, right):
+    if not isinstance(left, list) or not isinstance(right, list):
+        return False
+    return _json_records(left) == _json_records(right)
+
+
+def _shape_error(data_file, field, value, detail):
+    return AuthError(
+        detail,
+        code=500, http_status=500,
+        extra={"data_file": data_file, "field": field,
+               "value_type": type(value).__name__})
+
+
+def normalize_collection_document(data, collection_key, id_field, data_file):
+    """把用户/店铺表整理为 {version, updated_at, collection: [记录...]}。
+
+    返回 (document, changed)。合法的「对象包列表」原样返回且 changed=False，
+    不触发写盘。顶层列表、或集合字段本身是对象时，转换成列表并保留全部记录。
+    无法识别的条目直接报错，调用方不得写盘。
+    """
+    if isinstance(data, list):
+        records = _records_from_list(data, collection_key, data_file)
+        return {
+            "version": 1,
+            "updated_at": now_iso(),
+            collection_key: records,
+        }, True
+    if not isinstance(data, dict):
+        raise _shape_error(
+            data_file, collection_key, data,
+            f"{data_file} 顶层是 {type(data).__name__}，无法读取，已保留原文件")
+    if collection_key not in data:
+        if isinstance(data.get(id_field), str):
+            return {
+                "version": data.get("version") if isinstance(data.get("version"), int) else 1,
+                "updated_at": data.get("updated_at") if isinstance(data.get("updated_at"), str) else now_iso(),
+                collection_key: [dict(data)],
+            }, True
+        extra = set(data) - _DOC_META_KEYS
+        if extra:
+            raise _shape_error(
+                data_file, collection_key, data,
+                f"{data_file} 缺少 {collection_key} 字段，已保留原文件")
+        doc = dict(data)
+        doc[collection_key] = []
+        if not isinstance(doc.get("version"), int):
+            doc["version"] = 1
+        if not isinstance(doc.get("updated_at"), str):
+            doc["updated_at"] = now_iso()
+        return doc, True
+    collection = data[collection_key]
+    if isinstance(collection, list):
+        _records_from_list(collection, collection_key, data_file)
+        return data, False
+    if isinstance(collection, dict):
+        records = []
+        for index, (key, value) in enumerate(collection.items()):
+            if not isinstance(value, dict):
+                raise _shape_error(
+                    data_file, collection_key, value,
+                    f"{data_file} 的 {collection_key} 第 {index + 1} 条不是对象"
+                    f"（实际类型 {type(value).__name__}），已保留原文件")
+            record = value
+            if id_field not in record and isinstance(key, str) and key:
+                record = dict(value)
+                record[id_field] = key
+            records.append(record)
+        doc = dict(data)
+        doc[collection_key] = records
+        if not isinstance(doc.get("version"), int):
+            doc["version"] = 1
+        if not isinstance(doc.get("updated_at"), str):
+            doc["updated_at"] = now_iso()
+        return doc, True
+    raise _shape_error(
+        data_file, collection_key, collection,
+        f"{data_file} 的 {collection_key} 是 {type(collection).__name__}，"
+        f"无法按列表读取，已保留原文件")
+
+
+def _records_from_list(items, collection_key, data_file):
+    records = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise _shape_error(
+                data_file, collection_key, item,
+                f"{data_file} 的 {collection_key} 第 {index + 1} 条不是对象"
+                f"（实际类型 {type(item).__name__}），已保留原文件")
+        records.append(item)
+    return records
+
+
+def _commit_collection_migration(path, document, collection_key, id_field, old_type):
+    """调用方已持有排他锁。备份 → 临时文件原子替换 → 读回校验；失败则恢复原文件。"""
+    data_file = os.path.basename(path)
+    backup = _backup_json_file(path)
+    expected = document.get(collection_key)
+    try:
+        _atomic_write_json(path, document)
+        written = _read_json_file(path)
+        got = written.get(collection_key) if isinstance(written, dict) else None
+        if not _records_equivalent(expected, got):
+            raise _shape_error(
+                data_file, collection_key, got,
+                f"{data_file} 迁移后校验失败，已恢复原始文件")
+    except Exception:
+        try:
+            _restore_json_file(backup, path)
+        except Exception as restore_error:
+            sys.stderr.write(
+                f"[data.migrate] file={data_file} field={collection_key} "
+                f"restore_failed={type(restore_error).__name__}\n")
+            raise
+        sys.stderr.write(
+            f"[data.migrate] file={data_file} field={collection_key} "
+            f"from={old_type} failed restored=yes\n")
+        raise
+    _log_migration(data_file, collection_key, old_type, "list", len(expected))
+
+
+def _collection_value_type(raw, collection_key):
+    if isinstance(raw, list):
+        return "list"
+    if isinstance(raw, dict):
+        return type(raw.get(collection_key)).__name__
+    return type(raw).__name__
+
+
+def _session_entry(item, index):
+    """从一条历史会话记录取出 (token, session)。无法识别时抛错，不丢弃。"""
+    if isinstance(item, dict):
+        token = item.get("token")
+        if isinstance(token, str) and token:
+            session = dict(item)
+            session.pop("token", None)
+            return token, session
+        if len(item) == 1:
+            key, value = next(iter(item.items()))
+            if (isinstance(key, str) and key and isinstance(value, dict)
+                    and value.get("user_id")):
+                return key, dict(value)
+        if item.get("user_id"):
+            material = json.dumps(
+                {k: item.get(k) for k in (
+                    "user_id", "created_at", "expires_at",
+                    "password_version", "store_id")},
+                ensure_ascii=False, sort_keys=True)
+            token = "recovered-" + hashlib.sha256(material.encode()).hexdigest()[:24]
+            return token, dict(item)
+        raise _shape_error(
+            "sessions.json", "sessions", item,
+            f"会话数据第 {index + 1} 条缺少用户标识，已保留原文件")
+    if (isinstance(item, (list, tuple)) and len(item) == 2
+            and isinstance(item[0], str) and item[0]
+            and isinstance(item[1], dict)):
+        return item[0], dict(item[1])
+    raise _shape_error(
+        "sessions.json", "sessions", item,
+        f"会话数据第 {index + 1} 条无法识别"
+        f"（实际类型 {type(item).__name__}），已保留原文件")
+
+
+def _sessions_from_list(items):
+    sessions = {}
+    for index, item in enumerate(items):
+        token, session = _session_entry(item, index)
+        if token in sessions:
+            raise _shape_error(
+                "sessions.json", "sessions", item,
+                f"会话数据第 {index + 1} 条与已有会话冲突，已保留原文件")
+        sessions[token] = session
+    return sessions
+
+
+def _sessions_value_type(raw):
+    if isinstance(raw, list):
+        return "list"
+    if isinstance(raw, dict):
+        return type(raw.get("sessions")).__name__
+    return type(raw).__name__
+
+
+def normalize_sessions_document(data):
+    """会话表规范形是 {sessions: {token: session}}。
+
+    历史文件里 sessions 可能是列表。空列表变成空对象；列表中的会话记录
+    按 token 收进对象，一条都不丢。已经是对象则 changed=False，不写盘。
+    """
+    if isinstance(data, list):
+        return {
+            "version": 1,
+            "updated_at": now_iso(),
+            "sessions": _sessions_from_list(data),
+        }, True
+    if not isinstance(data, dict):
+        raise _shape_error(
+            "sessions.json", "sessions", data,
+            f"sessions.json 顶层是 {type(data).__name__}，无法读取，已保留原文件")
+    if "sessions" not in data:
+        if isinstance(data.get("token"), str) and data.get("user_id"):
+            token = data["token"]
+            session = dict(data)
+            session.pop("token", None)
+            return {
+                "version": 1,
+                "updated_at": now_iso(),
+                "sessions": {token: session},
+            }, True
+        extra = set(data) - _DOC_META_KEYS
+        if extra:
+            raise _shape_error(
+                "sessions.json", "sessions", data,
+                "sessions.json 缺少 sessions 字段，已保留原文件")
+        doc = dict(data)
+        doc["sessions"] = {}
+        if not isinstance(doc.get("version"), int):
+            doc["version"] = 1
+        if not isinstance(doc.get("updated_at"), str):
+            doc["updated_at"] = now_iso()
+        return doc, True
+    sessions = data["sessions"]
+    if isinstance(sessions, dict):
+        for index, (key, value) in enumerate(sessions.items()):
+            if not isinstance(key, str) or not isinstance(value, dict):
+                raise _shape_error(
+                    "sessions.json", "sessions", value,
+                    f"会话数据第 {index + 1} 条不是对象"
+                    f"（实际类型 {type(value).__name__}），已保留原文件")
+        return data, False
+    if isinstance(sessions, list):
+        doc = dict(data)
+        doc["sessions"] = _sessions_from_list(sessions)
+        if not isinstance(doc.get("version"), int):
+            doc["version"] = 1
+        doc["updated_at"] = now_iso()
+        return doc, True
+    if sessions is None:
+        doc = dict(data)
+        doc["sessions"] = {}
+        return doc, True
+    raise _shape_error(
+        "sessions.json", "sessions", sessions,
+        f"sessions.json 的 sessions 是 {type(sessions).__name__}，"
+        f"无法读取，已保留原文件")
+
+
+def _sessions_equivalent(left, right):
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    if set(left) != set(right):
+        return False
+    return all(left[key] == right[key] for key in left)
+
+
+def _commit_sessions_migration(path, document, old_type):
+    """调用方已持有排他锁。备份、原子写入、读回校验，失败恢复原文件。"""
+    backup = _backup_json_file(path)
+    expected = document.get("sessions")
+    try:
+        _atomic_write_json(path, document)
+        written = _read_json_file(path)
+        got = written.get("sessions") if isinstance(written, dict) else None
+        if not _sessions_equivalent(expected, got):
+            raise _shape_error(
+                "sessions.json", "sessions", got,
+                "sessions.json 迁移后校验失败，已恢复原始文件")
+    except Exception:
+        try:
+            _restore_json_file(backup, path)
+        except Exception as restore_error:
+            sys.stderr.write(
+                "[data.migrate] file=sessions.json field=sessions "
+                f"restore_failed={type(restore_error).__name__}\n")
+            raise
+        sys.stderr.write(
+            f"[data.migrate] file=sessions.json field=sessions "
+            f"from={old_type} failed restored=yes\n")
+        raise
+    _log_migration("sessions.json", "sessions", old_type, "dict", len(expected))
+
+
 # ==================== 会话存储 ====================
 class SessionStore:
     """服务端会话: token -> {user_id, store_id, ...}; 持久化支持服务重启后保持登录"""
@@ -192,8 +555,18 @@ class SessionStore:
         if not os.path.exists(self.path):
             return {"version": 1, "updated_at": now_iso(), "sessions": {}}
         with FileLock(self._lock_path, exclusive=False):
-            with open(self.path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            raw = _read_json_file(self.path)
+        document, changed = normalize_sessions_document(raw)
+        if not changed:
+            return document
+        # 共享锁已释放后再取排他锁，避免同一进程 flock 自死锁
+        with FileLock(self._lock_path):
+            raw = _read_json_file(self.path)
+            document, changed = normalize_sessions_document(raw)
+            if changed:
+                _commit_sessions_migration(
+                    self.path, document, _sessions_value_type(raw))
+            return document
 
     def _save(self, data):
         directory = os.path.dirname(self.path)
@@ -215,9 +588,17 @@ class SessionStore:
         now = datetime.now()
         expires = now + timedelta(hours=SESSION_TTL_HOURS)
         data = self._load()
+        sessions = data.get("sessions")
+        if not isinstance(sessions, dict):
+            raise AuthError(
+                "会话数据异常：sessions 不是对象，已保留原文件",
+                code=500, http_status=500,
+                extra={"data_file": "sessions.json", "field": "sessions",
+                       "value_type": type(sessions).__name__})
         # 顺手清理过期会话
-        data["sessions"] = {t: s for t, s in data["sessions"].items()
-                            if s.get("expires_at", "") > now_iso()}
+        data["sessions"] = {t: s for t, s in sessions.items()
+                            if isinstance(s, dict)
+                            and s.get("expires_at", "") > now_iso()}
         data["sessions"][token] = {
             "user_id": user["user_id"],
             "username": user["username"],
@@ -235,7 +616,14 @@ class SessionStore:
         if not token:
             return None
         data = self._load()
-        session = data["sessions"].get(token)
+        sessions = data.get("sessions")
+        if not isinstance(sessions, dict):
+            raise AuthError(
+                "会话数据异常：sessions 不是对象，已保留原文件",
+                code=500, http_status=500,
+                extra={"data_file": "sessions.json", "field": "sessions",
+                       "value_type": type(sessions).__name__})
+        session = sessions.get(token)
         if not session:
             return None
         if session.get("expires_at", "") <= now_iso():
@@ -245,18 +633,32 @@ class SessionStore:
 
     def delete(self, token):
         data = self._load()
-        if token in data["sessions"]:
-            del data["sessions"][token]
+        sessions = data.get("sessions")
+        if not isinstance(sessions, dict):
+            raise AuthError(
+                "会话数据异常：sessions 不是对象，已保留原文件",
+                code=500, http_status=500,
+                extra={"data_file": "sessions.json", "field": "sessions",
+                       "value_type": type(sessions).__name__})
+        if token in sessions:
+            del sessions[token]
             data["updated_at"] = now_iso()
             self._save(data)
 
     def revoke_user(self, user_id, keep_token=None):
         """吊销某用户全部会话（停用账号/重置密码）; keep_token 保留当前会话"""
         data = self._load()
+        sessions = data.get("sessions")
+        if not isinstance(sessions, dict):
+            raise AuthError(
+                "会话数据异常：sessions 不是对象，已保留原文件",
+                code=500, http_status=500,
+                extra={"data_file": "sessions.json", "field": "sessions",
+                       "value_type": type(sessions).__name__})
         removed = 0
-        for t in list(data["sessions"]):
-            if data["sessions"][t].get("user_id") == user_id and t != keep_token:
-                del data["sessions"][t]
+        for t in list(sessions):
+            if sessions[t].get("user_id") == user_id and t != keep_token:
+                del sessions[t]
                 removed += 1
         if removed:
             data["updated_at"] = now_iso()
@@ -283,34 +685,54 @@ class UserManager:
     # ---------- 底层读写 ----------
     @staticmethod
     def _read_json(path):
-        if not os.path.exists(path):
-            return None
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return _read_json_file(path)
 
     @staticmethod
     def _atomic_write(path, data):
-        import tempfile
-        directory = os.path.dirname(path)
-        fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            raise
+        _atomic_write_json(path, data)
+
+    def _canonical_collection_locked(self, path, collection_key, id_field, missing):
+        """调用方已持有排他锁。结构不一致时备份并迁移，记录一条不丢。"""
+        raw = self._read_json(path)
+        if raw is None:
+            return missing
+        document, changed = normalize_collection_document(
+            raw, collection_key, id_field, os.path.basename(path))
+        if changed:
+            _commit_collection_migration(
+                path, document, collection_key, id_field,
+                _collection_value_type(raw, collection_key))
+        return document
+
+    def _read_collection(self, path, lock_path, collection_key, id_field):
+        if not os.path.exists(path):
+            return None
+        with FileLock(lock_path, exclusive=False):
+            raw = self._read_json(path)
+        if raw is None:
+            return None
+        document, changed = normalize_collection_document(
+            raw, collection_key, id_field, os.path.basename(path))
+        if not changed:
+            return document
+        with FileLock(lock_path):
+            return self._canonical_collection_locked(
+                path, collection_key, id_field, None)
+
+    def _read_users_doc(self):
+        return self._read_collection(
+            self.users_path, self._users_lock, "users", "user_id")
+
+    def _read_stores_doc(self):
+        return self._read_collection(
+            self.stores_path, self._stores_lock, "stores", "store_id")
 
     def _mutate_users(self, mutator):
         """持锁读-改-写用户表"""
         with FileLock(self._users_lock):
-            data = self._read_json(self.users_path) or {
-                "version": 1, "updated_at": now_iso(), "users": []}
+            data = self._canonical_collection_locked(
+                self.users_path, "users", "user_id",
+                {"version": 1, "updated_at": now_iso(), "users": []})
             result = mutator(data)
             data = result if result is not None else data
             data["updated_at"] = now_iso()
@@ -319,8 +741,9 @@ class UserManager:
 
     def _mutate_stores(self, mutator):
         with FileLock(self._stores_lock):
-            data = self._read_json(self.stores_path) or {
-                "version": 1, "updated_at": now_iso(), "stores": []}
+            data = self._canonical_collection_locked(
+                self.stores_path, "stores", "store_id",
+                {"version": 1, "updated_at": now_iso(), "stores": []})
             result = mutator(data)
             data = result if result is not None else data
             data["updated_at"] = now_iso()
@@ -329,7 +752,7 @@ class UserManager:
 
     # ---------- 状态 ----------
     def is_initialized(self):
-        data = self._read_json(self.users_path)
+        data = self._read_users_doc()
         return bool(data and data.get("users"))
 
     # ---------- 初始化管理员（一次性） ----------
@@ -375,7 +798,7 @@ class UserManager:
 
     # ---------- 查询 ----------
     def get_user_by_username(self, username):
-        data = self._read_json(self.users_path)
+        data = self._read_users_doc()
         if not data:
             return None
         for u in data.get("users", []):
@@ -384,7 +807,7 @@ class UserManager:
         return None
 
     def get_user(self, user_id):
-        data = self._read_json(self.users_path)
+        data = self._read_users_doc()
         if not data:
             return None
         for u in data.get("users", []):
@@ -393,7 +816,7 @@ class UserManager:
         return None
 
     def get_store(self, store_id):
-        data = self._read_json(self.stores_path)
+        data = self._read_stores_doc()
         if not data:
             return None
         for s in data.get("stores", []):
@@ -403,7 +826,7 @@ class UserManager:
 
     def list_stores(self):
         """全部店铺记录（保持 stores.json 顺序）; 供跨店铺查询/管理使用"""
-        data = self._read_json(self.stores_path) or {"stores": []}
+        data = self._read_stores_doc() or {"stores": []}
         return list(data.get("stores", []))
 
     def rename_store(self, operator, store_id, new_name,
@@ -454,7 +877,7 @@ class UserManager:
         停用/归档店铺从业务口径（页面筛选、聚合统计、导入目标、成员店铺列表）自动移除。
         该方法是"成员店铺"口径的唯一来源, 聚合查询/写入目标/前端下拉均以此为准。
         """
-        users_data = self._read_json(self.users_path) or {"users": []}
+        users_data = self._read_users_doc() or {"users": []}
         users = {u.get("user_id"): u for u in users_data.get("users", [])}
         result = []
         for s in self.list_stores():
@@ -484,8 +907,8 @@ class UserManager:
         """
         if operator.get("role") != "admin":
             raise AuthError("仅管理员可以修改店铺归属", code=403, http_status=403)
-        users_snap = self._read_json(self.users_path)
-        stores_snap = self._read_json(self.stores_path)
+        users_snap = self._read_users_doc()
+        stores_snap = self._read_stores_doc()
         store = self.get_store(store_id)
         if store is None:
             raise AuthError(f"店铺不存在: {store_id}", code=404, http_status=404)
@@ -611,8 +1034,8 @@ class UserManager:
                 raise AuthError("目标成员已停用，请先启用")
             if target.get("role") != "member":
                 raise AuthError("不能将店铺分配给管理员账号")
-        users_snap = self._read_json(self.users_path)
-        stores_snap = self._read_json(self.stores_path)
+        users_snap = self._read_users_doc()
+        stores_snap = self._read_stores_doc()
         existing = {s.get("store_id")
                     for s in (stores_snap or {}).get("stores", [])}
         store_id = "s_" + secrets.token_hex(4)
@@ -679,7 +1102,7 @@ class UserManager:
                  or (action == "enable" and current == "disabled"))
         if not valid:
             raise AuthError(f"店铺当前状态为 {current}，不支持 {action} 操作")
-        stores_snap = self._read_json(self.stores_path)
+        stores_snap = self._read_stores_doc()
         now = now_iso()
 
         def mutator(d):
@@ -705,7 +1128,7 @@ class UserManager:
         仅当存在 archived 状态店铺时写盘（无则零写入, 幂等）;
         返回迁移清单 [{store_id, name}] 供启动审计使用。
         """
-        data = self._read_json(self.stores_path)
+        data = self._read_stores_doc()
         if not data:
             return []
         migrated = [{"store_id": s.get("store_id"), "name": s.get("name")}
@@ -735,8 +1158,8 @@ class UserManager:
         if store is None:
             raise AuthError(f"店铺不存在: {store_id}", code=404, http_status=404)
         owner_id = store.get("owner_user_id")
-        users_snap = self._read_json(self.users_path)
-        stores_snap = self._read_json(self.stores_path)
+        users_snap = self._read_users_doc()
+        stores_snap = self._read_stores_doc()
 
         def mutate_store(d):
             d["stores"] = [s for s in d.get("stores", [])
@@ -784,8 +1207,8 @@ class UserManager:
                                    if prev_owner else None),
                 "record_counts": {},
             }
-        users_snap = self._read_json(self.users_path)
-        stores_snap = self._read_json(self.stores_path)
+        users_snap = self._read_users_doc()
+        stores_snap = self._read_stores_doc()
         now = now_iso()
 
         def mutate_store(d):
@@ -826,8 +1249,8 @@ class UserManager:
         }
 
     def list_users(self):
-        data = self._read_json(self.users_path) or {"users": []}
-        stores = self._read_json(self.stores_path) or {"stores": []}
+        data = self._read_users_doc() or {"users": []}
+        stores = self._read_stores_doc() or {"stores": []}
         store_names = {s["store_id"]: s.get("name") for s in stores.get("stores", [])}
         result = []
         for u in data.get("users", []):
