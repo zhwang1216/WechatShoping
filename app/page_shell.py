@@ -52,16 +52,40 @@ ADMIN_ONLY_ITEMS = [
     ("/logs", "操作日志"),
 ]
 
+_ROUTE_LABEL = {href: label for href, label in (
+    NAV_ITEMS + MGMT_ITEMS + ADMIN_ONLY_ITEMS)}
+_MGMT_PATHS = {href for href, _ in MGMT_ITEMS}
+
 
 def _link(href, label, active):
     cls = ' class="active"' if active else ""
     return f'    <a href="{href}"{cls}>{label}</a>'
 
 
+def _breadcrumb(active_path):
+    """顶栏面包屑：首页 > (用户管理) > 当前页"""
+    path = (active_path or "").rstrip("/") or "/"
+    if path == "/":
+        path = "/dashboard"
+    parts = ['<nav class="app-breadcrumb" aria-label="面包屑">']
+    parts.append('<a href="/dashboard" class="bc-link">首页</a>')
+    label = _ROUTE_LABEL.get(path)
+    if path in _MGMT_PATHS:
+        parts.append('<span class="bc-sep" aria-hidden="true">/</span>')
+        parts.append('<span class="bc-muted">用户管理</span>')
+    if path != "/dashboard" and label:
+        parts.append('<span class="bc-sep" aria-hidden="true">/</span>')
+        parts.append(f'<span class="bc-current" aria-current="page">{label}</span>')
+    parts.append("</nav>")
+    return "".join(parts)
+
+
 def render(active_path):
     """生成侧边栏 + 顶栏 + 内容容器起始标签。"""
     active_path = (active_path or "").rstrip("/") or "/"
-    group_active = active_path in {href for href, _ in MGMT_ITEMS}
+    if active_path == "/":
+        active_path = "/dashboard"
+    group_active = active_path in _MGMT_PATHS
     lines = [
         '<aside class="app-sidebar" id="app-sidebar">',
         '  <div class="sidebar-brand"><span class="logo">微</span><span class="brand-text">微信小店对账与利润核算系统</span></div>',
@@ -95,9 +119,11 @@ def render(active_path):
         '<header class="topbar">',
         '  <button class="topbar-menu-btn" id="sidebar-open" type="button" aria-label="打开菜单">☰</button>',
         '  <span class="topbar-brand"><span class="logo">微</span>微信小店对账与利润核算系统</span>',
+        f'  {_breadcrumb(active_path)}',
         '  <span class="meta" id="nav-meta"></span>',
         '  <div id="auth-area" class="auth-area"></div>',
         '</header>',
-        '<div class="container">',
+        '<div class="container app-content">',
+        '<script src="/static/app_chrome.js"></script>',
     ]
     return "\n".join(lines) + "\n"

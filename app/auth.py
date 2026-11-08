@@ -569,6 +569,13 @@ class SessionStore:
             return document
 
     def _save(self, data):
+        sessions = data.get("sessions") if isinstance(data, dict) else None
+        if not isinstance(sessions, dict):
+            raise AuthError(
+                "会话数据异常：拒绝把 sessions 写成非对象，原文件未修改",
+                code=500, http_status=500,
+                extra={"data_file": "sessions.json", "field": "sessions",
+                       "value_type": type(sessions).__name__})
         directory = os.path.dirname(self.path)
         fd = -1
         tmp = None

@@ -1,6 +1,6 @@
 /* 侧边导航交互: 桌面折叠/展开（localStorage 记忆）+ 移动端抽屉 + 管理用户菜单组
    布局与图标由 style.css 静态渲染, 本脚本仅负责交互:
-   - #sidebar-collapse: 折叠/展开（body.sidebar-collapsed, 220px <-> 64px）
+   - #sidebar-collapse: 折叠/展开（body.sidebar-collapsed, 240px <-> 68px）
    - #sidebar-open + #sidebar-backdrop: 移动端抽屉开合（body.sidebar-open）
    - .nav-group: 管理用户菜单组展开/收起（localStorage 记忆, 组内路由强制展开）
    - 折叠态悬停提示: 动态为菜单项设置 title（不写入静态 HTML, 保持导航断言口径） */

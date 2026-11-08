@@ -5,15 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>利润核算 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
-<style>
-.formula-box{background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:10px 12px;margin:6px 0;font-size:13px;line-height:1.7}
-.formula-box b{color:#0f172a}
-.parts-table td{font-size:12px}
-.policy-select{min-width:min(230px,100%);max-width:100%}
-@media (max-width: 768px) {
-  .policy-select{width:100%;min-width:0}
-}
-</style>
 </head>
 <body>
 <!--@app-shell-->
@@ -52,15 +43,42 @@
     </div>
   </div>
 
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
+  <div class="card">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+  </div>
 
-  <div class="stat-grid" id="stat-status"></div>
-  <div class="stat-grid" id="stat-cost"></div>
-  <div class="stat-grid" id="stat-revenue"></div>
+  <section class="profit-finance-section card" id="finance-core">
+    <h3>核心指标（只读，与后端核算一致）</h3>
+    <div class="profit-status-strip" id="stat-status"></div>
+    <div class="profit-kpi-grid" id="stat-cost"></div>
+    <div class="profit-note-banner" id="composite-note"></div>
+    <div class="profit-aux-grid" id="stat-revenue"></div>
+    <div class="profit-ad-card" id="ad-expense-card">
+      <div>
+        <div class="ad-label">广告花费总金额 <span class="badge blue">唯一可编辑</span></div>
+        <div class="ad-value readonly" id="ad-expense-display">—</div>
+        <div class="ad-hint" id="ad-expense-hint">按自然月登记，独立核算，不混入综合成本，不做订单级分摊。保存将写入操作日志。</div>
+      </div>
+      <button class="btn secondary" type="button" id="btn-edit-ad" disabled>登记广告费</button>
+    </div>
+  </section>
+
+  <section class="card profit-finance-section" id="analysis-area">
+    <h3 style="margin:0 0 12px">经营分析</h3>
+    <div class="profit-analysis-grid" id="analysis-grid">
+      <div class="profit-panel"><h4>收入与成本结构</h4><div id="chart-structure"></div></div>
+      <div class="profit-panel"><h4>每月利润趋势</h4><div id="chart-trend"></div></div>
+      <div class="profit-panel"><h4>商品毛利排行</h4><div id="chart-ranking"></div></div>
+      <div class="profit-panel"><h4>店铺利润对比</h4><div id="chart-stores"></div></div>
+    </div>
+  </section>
 
   <div class="card table-card">
-    <div class="card-head"><h3 style="margin:0">订单利润明细</h3>
+    <div class="card-head"><h3 style="margin:0">订单明细</h3>
+      <span class="hint">处理中退款仅供参考，不计入成功退款与利润</span>
       <button class="btn secondary" id="btn-export">导出当前筛选</button>
     </div>
     <div class="filter-grid">
@@ -82,11 +100,10 @@
     <div class="table-wrap">
       <table id="profit-table">
         <thead><tr>
-          <th>订单号</th><th>下单时间</th><th class="num">实收</th>
-          <th class="num">成功退款</th><th class="num">处理中退款</th>
-          <th class="num">净收入</th><th class="num">计入补贴</th>
-          <th class="num">综合总金额</th><th class="num">技术服务费</th>
-          <th class="num">贡献利润</th><th>利润率</th><th>状态</th><th class="col-op">操作</th>
+          <th>订单号</th><th>下单时间</th><th class="num">订单收入</th>
+          <th class="num">产品成本</th><th class="num">快递费</th><th class="num">综合成本</th>
+          <th class="num">成功退款</th><th class="num">处理中</th>
+          <th class="num">技术服务费</th><th class="num">产品毛利</th><th>核算状态</th><th class="col-op">操作</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -103,6 +120,7 @@
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
 <script src="/static/store_scope.js"></script>
+<script src="/static/filter_system.js"></script>
 <script>
 const STATUS_META = {
   calculated: ["已计算", "green"], pending_confirmation: ["待确认", "orange"],
@@ -144,7 +162,7 @@ function timeFilterExplicit() {
 
 const MF = new MonthFilter({
   container: "month-filter",
-  timeLabel: "订单下单时间",
+  timeLabel: FilterSystem.suggestTimeLabel(location.pathname) || "订单下单时间",
   onChange: () => load(),
 });
 
@@ -165,12 +183,12 @@ async function loadMeta() {
 }
 
 function qs() {
-  const p = new URLSearchParams();
-  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
-  SS.appendTo(p);
-  if (document.getElementById("f-order").value.trim()) p.set("order_id", document.getElementById("f-order").value.trim());
-  if (document.getElementById("f-status").value) p.set("profit_status", document.getElementById("f-status").value);
-  return p;
+  const extra = {};
+  const oid = document.getElementById("f-order").value.trim();
+  const st = document.getElementById("f-status").value;
+  if (oid) extra.order_id = oid;
+  if (st) extra.profit_status = st;
+  return FilterSystem.toSearchParams(MF, SS, extra);
 }
 
 async function load(page = 1, size = 50) {
@@ -192,6 +210,8 @@ async function load(page = 1, size = 50) {
       return;
     }
     renderStats(data);
+    renderAnalysis(data);
+    renderAdExpense(data);
     renderCalcMeta(data);
     state.innerHTML = "";
     if (!data.has_calculation) {
@@ -209,23 +229,21 @@ async function load(page = 1, size = 50) {
     } else {
       tbody.innerHTML = currentRows.map((r, i) => {
         const a = r.amounts || {};
-        const profit = a.operating_contribution_profit;
-        const pcls = profit === null || profit === undefined ? "" : (Number(profit) >= 0 ? "profit-pos" : "profit-neg");
-        const mg = (r.margin || {});
+        const gross = a.product_gross_profit;
+        const gcls = gross === null || gross === undefined ? "" : (Number(gross) >= 0 ? "profit-pos" : "profit-neg");
         return `<tr>
           <td>${esc(r.order_id)}</td>
           <td>${esc(fmtTime(r.order_time))}</td>
-          <td class="num">${fmtMoney(a.actual_received_amount)}</td>
-          <td class="num">${fmtMoney(a.refund_success_amount)}</td>
-          <td class="num" style="color:var(--warning)">${fmtMoney(a.refund_pending_amount)}</td>
-          <td class="num">${fmtMoney(a.net_revenue)}</td>
-          <td class="num">${fmtMoney(a.platform_subsidy_credited)}${a.platform_subsidy_excluded && Number(a.platform_subsidy_excluded) > 0 ? `<span style="font-size:11px;color:var(--text-light)">（未计入 ${fmtMoney(a.platform_subsidy_excluded)}）</span>` : ""}</td>
-          <td class="num">${fmtMoney(a.supplier_total_amount)}</td>
-          <td class="num">${fmtMoney(a.technical_service_fee)}</td>
-          <td class="num ${pcls}">${profit === null || profit === undefined ? "—" : fmtMoney(profit)}</td>
-          <td>${marginCell(mg)}</td>
+          <td class="num readonly-cell">${fmtMoney(a.product_sales_amount)}</td>
+          <td class="num readonly-cell">${a.product_cost != null ? fmtMoney(a.product_cost) : `<span class="badge orange">待核对</span>`}</td>
+          <td class="num readonly-cell">${a.courier_fee != null ? fmtMoney(a.courier_fee) : `<span class="badge orange">待核对</span>`}</td>
+          <td class="num readonly-cell">${fmtMoney(a.composite_cost ?? a.supplier_total_amount)}</td>
+          <td class="num readonly-cell">${fmtMoney(a.refund_success_amount)}</td>
+          <td class="num readonly-cell" style="color:var(--warning)">${fmtMoney(a.refund_pending_amount)}</td>
+          <td class="num readonly-cell">${fmtMoney(a.technical_service_fee)}</td>
+          <td class="num readonly-cell ${gcls}">${gross === null || gross === undefined ? "—" : fmtMoney(gross)}</td>
           <td>${profitBadge(r.profit_status)}</td>
-          <td class="col-op"><button class="link-btn" onclick="showDetail(${i})">明细</button></td>
+          <td class="col-op"><button class="link-btn" onclick="showDetail(${i})">公式</button></td>
         </tr>`;
       }).join("");
     }
@@ -253,39 +271,182 @@ function fmtMoneyThousands(v) {
   return neg + grouped + "." + parts[1];
 }
 
+const MONEY_OK = /^\d+(\.\d{1,2})?$/;
+let lastPayload = null;
+
+function canEditAd() {
+  return (!SS.multi || !!SS.storeId);
+}
+
 function renderStats(data) {
+  lastPayload = data;
   const s = data.statistics || {};
   const noCalc = data.has_calculation === false;
-  const statusCards = [
-    ["订单总数", s.total ?? 0, ""],
+  const pills = [
+    ["订单", s.total ?? 0, ""],
     ["已计算", s.calculated ?? 0, "var(--success)"],
     ["待确认", s.pending_confirmation ?? 0, "var(--warning)"],
-    ["不可计算", s.not_calculable ?? 0, "var(--text-light)"],
+    ["不可计算", s.not_calculable ?? 0, ""],
     ["需复核", s.needs_review ?? 0, "#0f766e"],
   ];
-  document.getElementById("stat-status").innerHTML = statusCards.map(([l, v, c]) =>
-    `<div class="stat-item"><div class="label">${l}</div><div class="value" style="${c ? `color:${c}` : ""}">${v}</div></div>`).join("");
+  document.getElementById("stat-status").innerHTML = pills.map(([l, v, c]) =>
+    `<span class="profit-status-pill">${l}<em style="${c ? `color:${c}` : ""}">${v}</em></span>`).join("");
 
   const costCards = [
-    ["产品成本合计", s.product_cost_total, s.product_cost_missing_count],
-    ["快递费合计", s.courier_fee_total, s.courier_fee_missing_count],
-    ["综合成本合计", s.composite_cost_total, null],
+    ["产品成本合计", s.product_cost_total, s.product_cost_missing_count, ""],
+    ["快递费合计", s.courier_fee_total, s.courier_fee_missing_count, ""],
+    ["综合成本合计", s.composite_cost_total, null, "accent"],
+    ["产品毛利", s.product_gross_profit_total, null, "accent"],
   ];
-  document.getElementById("stat-cost").innerHTML = costCards.map(([l, v, m]) => {
-    const val = (noCalc || v === undefined || v === null) ? "—" : fmtMoney(v);
+  document.getElementById("stat-cost").innerHTML = costCards.map(([l, v, m, cls]) => {
+    const val = (noCalc || v === undefined || v === null) ? "—" : fmtMoneyThousands(v);
     const badge = (!noCalc && typeof m === "number" && m > 0)
-      ? `<div class="sub"><span class="badge orange">${m} 单待核对</span></div>` : "";
-    return `<div class="stat-item"><div class="label">${l}</div><div class="value">${val}</div>${badge}</div>`;
+      ? `<div class="k-sub"><span class="badge orange">${m} 单待核对</span></div>` : "";
+    return `<div class="profit-kpi ${cls || ""}"><div class="k-label">${l}</div>
+      <div class="k-value readonly">${val}</div>${badge}</div>`;
   }).join("");
 
+  const noteEl = document.getElementById("composite-note");
+  noteEl.textContent = s.composite_cost_note || "综合成本在利润公式中仅扣减一次；分项仅用于核对。";
+
+  const afterAd = (noCalc || !s.profit_total) ? "—" : fmtMoney(
+    Number(s.profit_total) - Number((data.ad_expense || {}).total || 0));
   const revCards = [
-    ["净收入合计", fmtMoney(s.net_revenue_total), ""],
-    ["技术服务费合计", (noCalc || s.technical_service_fee == null) ? "—" : fmtMoney(s.technical_service_fee), ""],
-    ["可计算贡献利润合计", fmtMoney(s.profit_total), "var(--success)"],
-    ["利润率", s.profit_margin || "—", "var(--success)"],
+    ["订单收入合计", noCalc ? "—" : fmtMoney(s.product_sales_total), ""],
+    ["净收入合计", noCalc ? "—" : fmtMoney(s.net_revenue_total), ""],
+    ["成功退款合计", noCalc ? "—" : fmtMoney(s.refund_success_total), "warn"],
+    ["技术服务费", (noCalc || s.technical_service_fee == null) ? "—" : fmtMoney(s.technical_service_fee), ""],
+    ["经营贡献利润", noCalc ? "—" : fmtMoney(s.profit_total), "good"],
+    ["扣除广告后利润", afterAd, ""],
   ];
-  document.getElementById("stat-revenue").innerHTML = revCards.map(([l, v, c]) =>
-    `<div class="stat-item"><div class="label">${l}</div><div class="value" style="${c ? `color:${c}` : ""}">${v}</div></div>`).join("");
+  document.getElementById("stat-revenue").innerHTML = revCards.map(([l, v, tone]) => {
+    const cls = tone === "warn" ? "warn" : "";
+    return `<div class="profit-kpi ${cls}"><div class="k-label">${l}</div><div class="k-value readonly">${v}</div></div>`;
+  }).join("");
+}
+
+function num(v) {
+  const n = Number(v);
+  return isNaN(n) ? 0 : n;
+}
+
+function renderAnalysis(data) {
+  const a = data.analysis || {};
+  const structure = a.structure || {};
+  const bars = [
+    ["订单收入", structure.product_sales, "#16877C"],
+    ["净收入", structure.net_revenue, "#0f766e"],
+    ["产品成本", structure.product_cost, "#dc2626"],
+    ["快递费", structure.courier_fee, "#b45309"],
+    ["综合成本", structure.composite_cost, "#991b1b"],
+    ["成功退款", structure.refund_success, "#d97706"],
+    ["技术服务费", structure.technical_service_fee, "#64748b"],
+    ["产品毛利", structure.product_gross_profit, "#15803d"],
+    ["贡献利润", structure.operating_contribution_profit, "#166534"],
+  ];
+  const max = Math.max(...bars.map(([, v]) => num(v)), 1);
+  document.getElementById("chart-structure").innerHTML = bars.map(([label, val, color]) => {
+    const w = Math.max(2, (num(val) / max) * 100);
+    return `<div class="profit-bar-row"><span class="bar-label">${label}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${color}"></div></div>
+      <span class="bar-val">${fmtMoney(val)}</span></div>`;
+  }).join("") || `<div class="trend-empty">暂无数据</div>`;
+
+  const trend = Object.values(a.monthly_trend || {}).sort((x, y) => (x.month || "").localeCompare(y.month || ""));
+  if (!trend.length) {
+    document.getElementById("chart-trend").innerHTML = `<div class="trend-empty">当前筛选无月份聚合</div>`;
+  } else {
+    const maxP = Math.max(...trend.map(t => num(t.operating_contribution_profit)), 1);
+    const barsHtml = trend.map(t => {
+      const h = Math.max(4, (num(t.operating_contribution_profit) / maxP) * 100);
+      return `<div class="bar" style="height:${h}%" title="${esc(t.month)} 贡献 ${fmtMoney(t.operating_contribution_profit)}"></div>`;
+    }).join("");
+    document.getElementById("chart-trend").innerHTML = `
+      <div class="profit-mini-trend">${barsHtml}</div>
+      <div class="trend-meta">${trend.length} 个月 · 柱高=经营贡献利润</div>`;
+  }
+
+  const ranking = Object.values(a.product_ranking || []);
+  document.getElementById("chart-ranking").innerHTML = ranking.length
+    ? `<table class="profit-rank-table"><thead><tr><th>商品</th><th class="num">单量</th><th class="num">收入</th><th class="num">毛利</th></tr></thead><tbody>
+      ${ranking.map(r => `<tr><td>${esc(r.title)}</td><td class="num">${r.order_count}</td>
+        <td class="num">${fmtMoney(r.product_sales)}</td><td class="num">${fmtMoney(r.product_gross_profit)}</td></tr>`).join("")}
+      </tbody></table>` : `<div class="trend-empty">无可汇总毛利</div>`;
+
+  const stores = Object.values(a.stores || []);
+  const multi = (data.store_count || 0) > 1 || stores.length > 1;
+  document.getElementById("chart-stores").innerHTML = !multi && stores.length <= 1
+    ? `<div class="trend-empty">选定单店时不展示对比；管理员可切换「全部店铺」查看</div>`
+    : (stores.length ? `<table class="profit-rank-table"><thead><tr><th>店铺</th><th class="num">单量</th><th class="num">综合成本</th><th class="num">产品毛利</th><th class="num">贡献利润</th></tr></thead><tbody>
+      ${stores.map(r => `<tr><td>${esc(r.store_name || r.store_id)}</td><td class="num">${r.order_count}</td>
+        <td class="num">${fmtMoney(r.composite_cost)}</td><td class="num">${fmtMoney(r.product_gross_profit)}</td>
+        <td class="num">${fmtMoney(r.profit_total)}</td></tr>`).join("")}
+      </tbody></table>` : `<div class="trend-empty">暂无店铺维度数据</div>`);
+}
+
+function renderAdExpense(data) {
+  const ad = data.ad_expense || {};
+  const el = document.getElementById("ad-expense-display");
+  const hint = document.getElementById("ad-expense-hint");
+  const btn = document.getElementById("btn-edit-ad");
+  el.textContent = ad.total != null ? fmtMoneyThousands(ad.total) : "—";
+  const months = ad.months || [];
+  const monthHint = months.length
+    ? `已登记月份：${months.map(m => `${m.month} ${fmtMoney(m.amount)}`).join("；")}`
+  : "当前筛选区间内尚无广告登记";
+  hint.textContent = `${monthHint}。保存前将二次确认并写入操作日志。`;
+  const editable = ad.editable_month || (MF.state.mode === "month" ? MF.state.month : null);
+  btn.disabled = !canEditAd() || !editable;
+  btn.dataset.month = editable || "";
+}
+
+function openAdExpenseDialog() {
+  const month = document.getElementById("btn-edit-ad").dataset.month
+    || (MF.state.mode === "month" ? MF.state.month : "");
+  if (!month) {
+    toast("请切换到单个自然月筛选后再登记广告费", "info");
+    return;
+  }
+  const existing = (lastPayload && lastPayload.ad_expense && lastPayload.ad_expense.months || [])
+    .find(m => m.month === month);
+  const cur = existing ? existing.amount : "";
+  openModal({
+    title: `登记 ${month} 广告花费`,
+    width: 440,
+    bodyHtml: `<p style="font-size:13px;color:var(--text-light);margin:0 0 12px">此为全系统唯一可手填的财务金额字段，不影响订单级综合成本。</p>
+      <div class="filter-item"><label>广告花费总金额（元）</label>
+        <input id="ad-amount-input" type="text" inputmode="decimal" autocomplete="off" value="${esc(cur)}" placeholder="0.00"></div>
+      <div class="field-err" id="ad-amount-err"></div>`,
+    actions: [
+      { text: "取消", kind: "secondary" },
+      {
+        text: "保存",
+        kind: "primary",
+        onClick: () => {
+          const v = document.getElementById("ad-amount-input").value.trim();
+          if (!MONEY_OK.test(v)) {
+            document.getElementById("ad-amount-err").textContent = "须为非负金额，最多两位小数";
+            return false;
+          }
+          confirmModal(
+            "确认保存广告费",
+            `确定将 ${month} 广告花费登记为 ${v} 元？金额写入后将记录操作日志，且不可与其他成本重复扣减。`,
+            () => saveAdExpense(month, v));
+          return true;
+        },
+      },
+    ],
+  });
+}
+
+async function saveAdExpense(month, amount) {
+  try {
+    await API.post("/api/ad-expenses", Object.assign({ month, amount }, SS.writeTarget()));
+    toast("广告花费已保存", "success");
+    load();
+  } catch (e) {
+    toast(e.message || "保存失败", "error");
+  }
 }
 
 function renderCalcMeta(data) {
@@ -408,8 +569,10 @@ document.getElementById("btn-export").onclick = () => {
   if (p.get("profit_status")) document.getElementById("f-status").value = p.get("profit_status");
 })();
 
+document.getElementById("btn-edit-ad").onclick = () => openAdExpenseDialog();
+
 loadMeta();
-load();
+SS.ready.then(() => load());
 </script>
 </body>
 </html>

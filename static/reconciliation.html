@@ -5,22 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>对账成本 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
-<style>
-  .risk-yes { color: #d97706; font-weight: 600; }
-  .blocked { color: #dc2626; font-weight: 600; }
-  .candidate-list { max-height: 260px; overflow: auto; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; }
-  .candidate-item { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
-  .candidate-item:last-child { border-bottom: none; }
-  .history-note { font-size: 12px; color: var(--text-light); }
-</style>
 </head>
 <body>
 <!--@app-shell-->
   <div class="page-title">对账成本</div>
   <div class="page-desc">按「主订单编号精确 → 订单编号精确 → 标准化相等 → 辅助候选（待人工确认）」优先级匹配；一个订单可关联多条供应商明细；总金额多行重复时自动识别重复风险并去重，粒度未经人工确认前不用于最终利润计算。月份筛选按订单下单时间归属（左闭右开区间）。</div>
 
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
+  <div class="card">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+  </div>
 
   <div class="stat-grid" id="stat-grid"></div>
 
@@ -83,6 +79,7 @@
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
 <script src="/static/store_scope.js"></script>
+<script src="/static/filter_system.js"></script>
 <script>
 const STATE = { page: 1, size: 50, options: null };
 let currentRows = [];
@@ -90,7 +87,7 @@ const selectedOrders = new Map();
 
 const MF = new MonthFilter({
   container: "month-filter",
-  timeLabel: "订单下单时间",
+  timeLabel: FilterSystem.suggestTimeLabel(location.pathname) || "订单下单时间",
   onChange: () => { STATE.page = 1; load(); },
 });
 
@@ -136,10 +133,10 @@ function usableCell(r) {
 }
 
 function queryStr() {
-  const p = new URLSearchParams();
-  p.set("page", STATE.page); p.set("page_size", STATE.size);
-  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
-  SS.appendTo(p);
+  const p = FilterSystem.toSearchParams(MF, SS, {
+    page: STATE.page,
+    page_size: STATE.size,
+  });
   const v = id => document.getElementById(id).value.trim();
   if (v("f-order-id")) p.set("order_id", v("f-order-id"));
   if (v("f-status")) p.set("match_status", v("f-status"));

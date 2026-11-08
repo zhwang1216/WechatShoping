@@ -63,18 +63,16 @@ class TestImportFlowRevamp(unittest.TestCase):
 
     def test_member_create_own_store(self):
         st, r = self.member.post("/api/stores", {"name": "我的新店铺"})
-        self.assertEqual(st, 200, r)
-        data = r["data"]
-        self.assertEqual(data["owner_user_id"], self.member_user_id)
-        self.assertEqual(data["status"], "active")
+        self.assertEqual(st, 403, r)
+        self.assertIn("管理员", r.get("message", ""))
 
     def test_member_create_with_other_owner_ignored(self):
         st, r = self.member.post("/api/stores", {
             "name": "强制归属店铺",
             "owner_user_id": self.other_user_id,
         })
-        self.assertEqual(st, 200, r)
-        self.assertEqual(r["data"]["owner_user_id"], self.member_user_id)
+        self.assertEqual(st, 403, r)
+        self.assertIn("管理员", r.get("message", ""))
 
     def test_admin_create_self_owner_rejected(self):
         st, r = self.admin.post("/api/stores", {

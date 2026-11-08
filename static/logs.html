@@ -8,19 +8,25 @@
 </head>
 <body>
 <!--@app-shell-->
-  <div class="page-title">操作日志</div>
-  <div class="page-desc">记录系统全部操作（导入、对账、核算、导出、数据读写、备份恢复等）。月份筛选按操作发生时间（time）归属（左闭右开区间），统计卡片与表格同筛选。</div>
+  <div class="admin-page-head">
+    <div class="page-title">操作日志</div>
+    <div class="page-desc">审计只读：记录导入、对账、核算、导出、店铺与用户管理等操作。历史日志不可删除。</div>
+  </div>
 
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
+  <div class="card">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+  </div>
 
   <div class="stat-grid" id="stat-grid"></div>
 
-  <div class="card">
+  <div class="card admin-filter-card">
     <div class="filter-grid">
       <div class="filter-item"><label>关键词</label><input id="f-keyword" placeholder="动作/操作人/详情包含"></div>
-      <div class="filter-item"><label>动作</label><input id="f-action" placeholder="如 import.confirm"></div>
-      <div class="filter-item"><label>操作人</label><input id="f-operator" placeholder="如 admin"></div>
+      <div class="filter-item"><label>动作（精确）</label><input id="f-action" placeholder="如 import.confirm"></div>
+      <div class="filter-item"><label>操作人</label><input id="f-operator" placeholder="用户名"></div>
       <div class="filter-actions">
         <button class="btn" id="btn-query">查询</button>
         <button class="btn secondary" id="btn-reset">重置</button>
@@ -29,14 +35,15 @@
   </div>
 
   <div class="card table-card">
-    <div class="card-head"><h3 style="margin:0">日志列表（新→旧）</h3><span class="hint" id="table-hint"></span></div>
+    <div class="card-head admin-toolbar">
+      <h3 style="margin:0">审计记录</h3>
+      <div class="head-actions">
+        <span class="hint" id="table-hint"></span>
+        <button class="btn secondary" id="btn-export">导出当前筛选</button>
+      </div>
+    </div>
     <div class="table-wrap">
-      <table id="log-table">
-        <thead><tr>
-          <th>时间</th><th>动作</th><th>操作人</th><th>结果</th><th>详情</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
+      <table id="log-table"><thead></thead><tbody></tbody></table>
     </div>
     <div id="table-state"></div>
     <div class="pager" id="pager"></div>
@@ -45,49 +52,102 @@
 
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/filter_system.js"></script>
+<script src="/static/modal.js"></script>
 <script src="/static/common_table.js"></script>
+<script src="/static/data_table.js"></script>
 <script src="/static/list_page.js"></script>
 <script src="/static/auth_nav.js"></script>
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
 <script src="/static/store_scope.js"></script>
 <script>
-function fmtDetail(d) {
+function fmtDetailJson(d) {
   if (d === null || d === undefined) return "—";
   if (typeof d === "string") return d;
-  try { return JSON.stringify(d); } catch (e) { return String(d); }
+  try {
+    return JSON.stringify(d, null, 2);
+  } catch (e) {
+    return String(d);
+  }
+}
+
+let logRows = [];
+
+function openLogDrawer(e) {
+  const html = `
+    <div class="detail-section"><h4>操作概要</h4>
+      <div class="kv-grid">
+        <div class="kv"><div class="k">操作时间</div><div class="v">${esc(fmtTime(e.time))}</div></div>
+        <div class="kv"><div class="k">操作人</div><div class="v">${esc(e.operator || "—")}</div></div>
+        <div class="kv"><div class="k">所属店铺</div><div class="v">${esc(e.store_name || "—")}<br><span style="font-family:monospace;font-size:11px;color:var(--text-light)">${esc(e.store_id || "")}</span></div></div>
+        <div class="kv"><div class="k">操作模块</div><div class="v">${esc(e.module_label || e.module || "—")}</div></div>
+        <div class="kv"><div class="k">操作类型</div><div class="v">${esc(e.operation_type_label || e.action || "—")}</div></div>
+        <div class="kv"><div class="k">执行结果</div><div class="v">${e.result === "error"
+          ? '<span class="badge red">失败</span>' : '<span class="badge green">成功</span>'}</div></div>
+      </div>
+    </div>
+    <div class="detail-section"><h4>操作详情</h4>
+      <pre class="audit-detail-pre" style="margin:0;padding:12px;background:var(--color-bg-muted);border-radius:8px;font-size:12px;max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-all">${esc(fmtDetailJson(e.detail))}</pre>
+    </div>
+    <div class="detail-section"><h4>记录 ID</h4>
+      <div style="font-family:monospace;font-size:12px">${esc(e.record_id || "—")}</div>
+    </div>`;
+  openDrawer({ title: "日志详情", width: 560, bodyHtml: html });
 }
 
 const LOG_PAGE = new ListPage({
   tableId: "log-table",
+  useDataTable: true,
   url: "/api/logs",
   itemsKey: "entries",
-  rowKey: e => e.record_id || (e.time + "|" + e.action + "|" + (e.operator || "")),
+  rowKey: e => e.record_id || (e.time + "|" + e.action),
   pageSize: 50,
   timeLabel: "操作发生时间",
+  exportUrl: "/api/logs/export",
   filters: [
     { id: "f-keyword", param: "keyword" },
     { id: "f-action", param: "action" },
     { id: "f-operator", param: "operator" },
   ],
   columns: [
-    { title: "时间", render: e => `<span style="white-space:nowrap">${fmtTime(e.time)}</span>` },
-    { title: "动作", render: e => `<span class="badge blue">${esc(e.action)}</span>` },
-    { title: "操作人", render: e => esc(e.operator || "—") },
-    { title: "结果", render: e => e.result === "error"
-      ? '<span class="badge red">失败</span>'
-      : '<span class="badge green">成功</span>' },
-    { title: "详情", render: e =>
-      `<span style="display:block;max-width:520px;white-space:normal;font-size:12px;color:var(--text-light)">${esc(fmtDetail(e.detail))}</span>` },
+    { key: "time", title: "操作时间", type: "datetime", sortable: "time",
+      render: e => fmtTime(e.time) },
+    { key: "operator", title: "操作人", render: e => esc(e.operator || "—") },
+    { key: "store_name", title: "所属店铺", ellipsis: true,
+      render: e => esc(e.store_name || "—") },
+    { key: "module_label", title: "操作模块",
+      render: e => esc(e.module_label || "—") },
+    { key: "operation_type", title: "操作类型", type: "status",
+      render: e => `<span class="badge blue">${esc(e.operation_type_label || e.action || "—")}</span>` },
+    { key: "result", title: "执行结果", type: "status",
+      render: e => e.result === "error"
+        ? `<span class="badge red">${esc(e.result_label || "失败")}</span>`
+        : `<span class="badge green">${esc(e.result_label || "成功")}</span>` },
+    { key: "detail_summary", title: "操作详情", ellipsis: true,
+      render: e => `<span class="cell-ellipsis" title="${esc(e.detail_summary || "")}">${esc(e.detail_summary || "—")}</span>` },
+    { key: "op", title: "", className: "col-op",
+      render: (e, i) => `<button class="link-btn" type="button" data-log-idx="${i}">详情</button>` },
   ],
   stats: s => s ? renderStatCards(null, [
     ["日志条数", s.entry_count, ""],
     ["操作人数", s.operator_count, ""],
     ["失败操作", s.error_count, s.error_count ? "danger" : "success"],
-  ], "时间口径：操作发生时间（time 字段）。") : "",
+  ], "时间口径：操作发生时间 time（左闭右开）。") : "",
   emptyHtml: mf =>
-    `<div class="empty-state"><div class="icon">🗂</div>当前筛选（${esc(mf.getLabel())}）内没有日志记录<br>
+    `<div class="empty-state"><div class="icon">🗂</div>当前筛选（${esc(mf.getLabel())}）无日志<br>
      <span style="font-size:12px">可切换月份或选择「全部」</span></div>`,
+  onData: r => {
+    logRows = r.data || [];
+    const table = document.getElementById("log-table");
+    if (!table) return;
+    table.querySelectorAll("[data-log-idx]").forEach(btn => {
+      btn.onclick = () => {
+        const i = Number(btn.getAttribute("data-log-idx"));
+        if (logRows[i]) openLogDrawer(logRows[i]);
+      };
+    });
+  },
 });
 
 LOG_PAGE.reload();

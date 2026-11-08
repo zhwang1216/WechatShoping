@@ -6,6 +6,7 @@
    原始记录留存(含错误行) -> 标准记录 upsert(业务键去重) -> 退款识别 ->
    异常记录 -> 重建退款订单视图 -> 统计返回
 3. 微信订单：商品发货=未发货（或无发货列且订单状态为待发货等）的行自动剔除，不写入订单库。
+4. 供应商成本：导入时匹配微信订单发货状态，未发货标记无效，无法匹配/待核对标记 pending，均保留记录。
 """
 import io
 import json
@@ -27,6 +28,12 @@ from .import_schemas import (MAPPING_VERSION, SOURCE_TYPES, TEMPLATE_VERSION,
                              get_template)
 from .normalizer import (build_supplier_cost_line, build_wechat_order_line,
                           money_str)
+from .cost_validity import (
+    apply_validity_to_cost,
+    build_orders_lookup,
+    evaluate_supplier_cost_validity,
+    revalidate_supplier_costs_for_order_ids,
+)
 from .profit_service import is_unshipped_order
 from .refund_view import build_refund_views
 from .time_range import in_range
@@ -104,7 +111,7 @@ _IMPORT_SYSTEM_FIELDS = {
     "match_key_normalized", "order_level_amounts_duplicated",
     "refund_deduction_status", "total_amount_semantics",
     "cost_granularity", "duplicate_total_amount_risk", "created_at_ts",
-    "refund", "tracking",
+    "refund", "tracking", "business_validity",
 }
 
 
@@ -236,6 +243,9 @@ class ImportService:
         new_raw = []
         new_anomalies = []
         overwrite_log = []
+        wechat_affected_order_ids = set()
+        supplier_orders_by_id = (build_orders_lookup(self.repo.read("orders")["records"])
+                                 if source_type == "supplier_cost" else None)
 
         def add_anomaly(order_id, etype, severity, message, related_ids):
             key = (order_id, etype)
@@ -345,6 +355,26 @@ class ImportService:
             line["updated_at"] = now
             raw["normalized_record_id"] = line["record_id"]
 
+            if source_type == "supplier_cost" and supplier_orders_by_id is not None:
+                new_bv, changed, prev_bv = apply_validity_to_cost(
+                    line, supplier_orders_by_id, batch_id=batch_id, evaluated_at=now)
+                if changed or not prev_bv:
+                    detail = {
+                        "supplier_record_id": line.get("record_id"),
+                        "business_key": rec["business_key"],
+                        "batch_id": batch_id,
+                        "store_id": target_store_id,
+                        "before": prev_bv or None,
+                        "after": new_bv,
+                    }
+                    evt = ("supplier_cost.validity_invalid"
+                           if new_bv.get("validity_status") == "invalid"
+                           else "supplier_cost.validity_revised")
+                    self.op_log.append(evt, detail=detail, operator=operator)
+
+            if source_type == "wechat_orders" and line.get("order_id"):
+                wechat_affected_order_ids.add(line["order_id"])
+
             if rec["warnings"]:
                 raw["validation"]["status"] = "warning"
                 raw["validation"]["warnings"] = rec["warnings"]
@@ -426,6 +456,9 @@ class ImportService:
         self.repo.update("raw_records", replace_records(raw_all + new_raw))
         if source_type == "wechat_orders":
             self.repo.update("refund_details", replace_records(refund_details))
+            revalidate_supplier_costs_for_order_ids(
+                self.repo, wechat_affected_order_ids,
+                op_log=self.op_log, operator=operator, batch_id=batch_id)
         if new_anomalies:
             self.repo.update("anomalies", replace_records(anomalies + new_anomalies))
 
@@ -721,7 +754,12 @@ class ImportService:
                  else build_supplier_cost_line)
         stats = {"total_rows": 0, "success_rows": 0, "error_rows": 0,
                  "duplicate_rows": 0, "updated_rows": 0, "skipped_rows": 0,
-                 "excluded_unshipped_rows": 0, "warning_rows": 0}
+                 "excluded_unshipped_rows": 0, "warning_rows": 0,
+                 "invalid_cost_rows": 0, "pending_cost_rows": 0}
+        orders_by_id = None
+        if source_type == "supplier_cost":
+            orders_by_id = build_orders_lookup(
+                self.repo.read("orders")["records"])
         row_results = []
         seen = set()
         for r, cells in iter_data_rows(ws, sa):
@@ -746,6 +784,25 @@ class ImportService:
                 stats["excluded_unshipped_rows"] += 1
                 stats["skipped_rows"] += 1
                 rec["outcome"] = "skipped_unshipped"
+            elif (source_type == "supplier_cost" and orders_by_id is not None):
+                preview_bv = evaluate_supplier_cost_validity(line, orders_by_id)
+                line["business_validity_preview"] = preview_bv
+                if preview_bv.get("validity_status") == "invalid":
+                    stats["invalid_cost_rows"] += 1
+                elif preview_bv.get("validity_status") == "pending":
+                    stats["pending_cost_rows"] += 1
+                key = _business_key(source_type, line)
+                rec["business_key"] = key
+                if key in seen:
+                    stats["duplicate_rows"] += 1
+                    rec["outcome"] = "duplicate"
+                elif key in existing_keys:
+                    stats["updated_rows"] += 1
+                    rec["outcome"] = "update"
+                else:
+                    stats["success_rows"] += 1
+                    rec["outcome"] = "insert"
+                seen.add(key)
             else:
                 key = _business_key(source_type, line)
                 rec["business_key"] = key
@@ -768,6 +825,13 @@ class ImportService:
             hints.insert(
                 0,
                 f"已自动剔除未发货订单 {stats['excluded_unshipped_rows']} 行（不写入系统）",
+            )
+        if source_type == "supplier_cost" and (
+                stats.get("invalid_cost_rows") or stats.get("pending_cost_rows")):
+            hints.insert(
+                0,
+                f"供应商成本有效性预检：无效 {stats.get('invalid_cost_rows', 0)} 行"
+                f"（未发货不参与统计），待核对 {stats.get('pending_cost_rows', 0)} 行",
             )
         period = self._compute_period(source_type, row_results)
         preview = {

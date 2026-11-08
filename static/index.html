@@ -5,63 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>数据导入 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
-<style>
-.page-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
-.page-head .page-title { margin-bottom: 0; }
-.page-head .page-desc { margin-bottom: 0; }
-.import-card { padding: 16px; }
-.upload-grid { gap: 10px; }
-.import-zone {
-  position: relative;
-  display: flex; align-items: center; gap: 14px; text-align: left;
-  min-height: 100px;
-  padding: 24px 18px 24px 22px; border: 1px dashed var(--border); border-radius: 10px;
-  background: #fff; color: var(--text);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease, transform .15s ease;
-  overflow: hidden;
-}
-.import-zone::before {
-  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
-  background: var(--zone-accent, var(--primary));
-}
-.import-zone:hover, .import-zone.drag {
-  border-color: var(--zone-accent, var(--primary)); border-style: solid;
-  background: #f8fafa; box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
-  transform: translateY(-1px);
-}
-.import-zone .icon {
-  display: flex; align-items: center; justify-content: center;
-  width: 44px; height: 44px; flex: 0 0 44px; font-size: 22px; border-radius: 10px;
-  background: color-mix(in srgb, var(--zone-accent, var(--primary)) 12%, #fff);
-  color: var(--zone-accent, var(--primary));
-}
-.import-zone .uz-title { font-size: 16px; font-weight: 700; }
-.import-zone .uz-hint { font-size: 12px; color: var(--text-light); margin-top: 3px; }
-.import-zone .uz-action {
-  margin-left: auto; font-size: 13px; font-weight: 600; white-space: nowrap;
-  padding: 7px 14px; border-radius: 6px;
-  color: var(--zone-accent, var(--primary));
-  background: color-mix(in srgb, var(--zone-accent, var(--primary)) 10%, #fff);
-  border: 1px solid color-mix(in srgb, var(--zone-accent, var(--primary)) 35%, #fff);
-  transition: background .15s ease, color .15s ease, border-color .15s ease;
-}
-.import-zone:hover .uz-action, .import-zone.drag .uz-action {
-  background: var(--zone-accent, var(--primary)); color: #fff;
-  border-color: var(--zone-accent, var(--primary));
-}
-#zone-wechat { --zone-accent: var(--primary); }
-#zone-supplier { --zone-accent: var(--warning); }
-.file-info-bar { margin: 12px 0 0; padding: 12px 14px; }
-.batch-filters { padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.pv-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px; flex-wrap: wrap; }
-#rows-modal .filter-bar { margin-bottom: 12px; }
-.pv-actions .force-opt { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-right: auto; }
-@media (max-width: 800px) {
-  .import-zone { flex-wrap: wrap; min-height: 88px; padding: 20px 18px 20px 22px; }
-  .import-zone .uz-action { margin-left: 0; }
-}
-</style>
 </head>
 <body>
 <!--@app-shell-->
@@ -241,6 +184,7 @@
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
 <script src="/static/store_scope.js"></script>
+<script src="/static/filter_system.js"></script>
 <script src="/static/modal.js"></script>
 <script>
 /* 导入店铺选择弹窗 + 上传任务状态机（每次任务重建，不沿用历史选择） */
@@ -261,7 +205,7 @@ const BATCH_STATE = { page: 1, size: 20 };
 
 const MF = new MonthFilter({
   container: "month-filter",
-  timeLabel: "导入时间",
+  timeLabel: FilterSystem.suggestTimeLabel(location.pathname) || "导入批次时间",
   onChange: () => { BATCH_STATE.page = 1; loadBatches(); },
 });
 
@@ -276,10 +220,10 @@ const SS = new StoreScope({
 })();
 
 function batchQueryStr() {
-  const p = new URLSearchParams();
-  p.set("page", BATCH_STATE.page); p.set("page_size", BATCH_STATE.size);
-  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
-  SS.appendTo(p);
+  const p = FilterSystem.toSearchParams(MF, SS, {
+    page: BATCH_STATE.page,
+    page_size: BATCH_STATE.size,
+  });
   const v = id => document.getElementById(id).value.trim();
   if (v("f-keyword")) p.set("keyword", v("f-keyword"));
   if (v("f-source")) p.set("source_type", v("f-source"));

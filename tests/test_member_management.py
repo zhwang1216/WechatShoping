@@ -124,7 +124,7 @@ class TestMemberManagementApiAndPage(unittest.TestCase):
     def test_g01_admin_page_has_delete_controls(self):
         status, html, _ = self.admin.get_page("/users")
         self.assertEqual(status, 200)
-        for needle in ('data-act="delete"', 'data-act="clear"',
+        for needle in ("openDeleteUser", "openClearData",
                        "仅删除账号，保留业务数据", "删除账号并清除店铺数据",
                        "输入店铺名称以确认"):
             self.assertIn(needle, html)

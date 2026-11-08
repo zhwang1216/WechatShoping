@@ -27,9 +27,15 @@ function ListPage(options) {
   this.data = null;
 
   var self = this;
+  var defaultTimeLabel = "";
+  if (typeof FilterSystem !== "undefined" && FilterSystem.suggestTimeLabel) {
+    defaultTimeLabel = FilterSystem.suggestTimeLabel(
+      typeof location !== "undefined" ? location.pathname : ""
+    ) || "";
+  }
   this.mf = new MonthFilter({
     container: this.opts.monthContainer || "month-filter",
-    timeLabel: this.opts.timeLabel || "",
+    timeLabel: this.opts.timeLabel || defaultTimeLabel,
     onChange: function () { self.reload(); },
   });
   this.ss = new StoreScope({
@@ -37,13 +43,13 @@ function ListPage(options) {
     onChange: function () { self.reload(); },
   });
 
-  this.table = new CommonTable({
+  var tableOpts = {
     tableId: this.opts.tableId,
     pagerEl: this.pagerEl,
     stateEl: this.stateEl,
     columns: this.opts.columns,
     rowKey: this.opts.rowKey,
-    staticHead: true,             // 表头保留在 HTML 中，组件只渲染表体
+    staticHead: this.opts.useDataTable !== true,
     emptyText: "暂无数据",
     pagination: { pageSize: this.opts.pageSize || 50 },
     dataSource: {
@@ -55,7 +61,20 @@ function ListPage(options) {
       onRefresh: function (r) { self._onRefresh(r); },
       onError: function (r) { self._onError(r.error); },
     },
-  });
+  };
+  if (this.opts.useDataTable === true && typeof DataTable === "function") {
+    this.dataTable = new DataTable(Object.assign({}, tableOpts, {
+      listPage: this,
+      sortFilterIds: this.opts.sortFilterIds,
+      storageKey: this.opts.tableId,
+      url: this.opts.url,
+      itemsKey: this.opts.itemsKey,
+      dataSource: tableOpts.dataSource,
+    }));
+    this.table = this.dataTable._ct;
+  } else {
+    this.table = new CommonTable(tableOpts);
+  }
 
   this.bind();
 }
@@ -64,9 +83,12 @@ function ListPage(options) {
    {id: 元素 id, param: 后端参数名, always: 是否总是携带, reset: 重置值} */
 ListPage.prototype.collectParams = function () {
   var p = {};
-  var mf = this.mf.getParams();
-  Object.keys(mf).forEach(function (k) { p[k] = mf[k]; });
-  this.ss.appendTo(p);
+  if (typeof FilterSystem !== "undefined" && FilterSystem.buildQueryParams) {
+    p = FilterSystem.buildQueryParams(this.mf, this.ss, {});
+  } else {
+    Object.assign(p, this.mf.getParams());
+    this.ss.appendTo(p);
+  }
   var filters = this.opts.filters || [];
   for (var i = 0; i < filters.length; i++) {
     var f = filters[i];

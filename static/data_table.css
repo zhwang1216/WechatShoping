@@ -1,0 +1,139 @@
+/* DataTable — 单容器滚动：横纵同步，表头 sticky，避免页内双纵向滚动条 */
+.table-card .data-table-host {
+  overflow: visible;
+  min-width: 0;
+  max-width: 100%;
+}
+.data-table {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+}
+.data-table__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: 0 var(--space-4) var(--space-2);
+  flex-wrap: wrap;
+}
+.data-table__viewport {
+  overflow: auto;
+  max-height: min(65vh, calc(100vh - var(--topbar-h) - 300px));
+  min-height: 120px;
+  min-width: 0;
+  border-top: 1px solid var(--color-border);
+  -webkit-overflow-scrolling: touch;
+}
+.data-table__viewport table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.data-table__viewport thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--color-bg-muted);
+  white-space: nowrap;
+  user-select: none;
+}
+.data-table__viewport tbody td {
+  background: var(--color-bg-card);
+}
+.data-table__viewport th.sortable {
+  cursor: pointer;
+  padding-right: 22px;
+}
+.data-table__viewport th.sortable:hover {
+  color: var(--color-primary);
+}
+.data-table__viewport th .dt-sort-ind {
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: 0.5;
+}
+.data-table__viewport th.dt-sorted-asc .dt-sort-ind::after { content: "▲"; opacity: 1; }
+.data-table__viewport th.dt-sorted-desc .dt-sort-ind::after { content: "▼"; opacity: 1; }
+.data-table__viewport th .dt-col-resizer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  opacity: 0;
+}
+.data-table__viewport th:hover .dt-col-resizer,
+.data-table__viewport th.dt-resizing .dt-col-resizer {
+  opacity: 1;
+  background: linear-gradient(90deg, transparent, var(--color-border-strong));
+}
+.data-table__viewport th {
+  position: sticky;
+  top: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.data-table__viewport th.col-fixed-right,
+.data-table__viewport td.col-fixed-right {
+  position: sticky;
+  right: 0;
+  z-index: 5;
+  box-shadow: -3px 0 6px rgba(38, 52, 69, 0.06);
+}
+.data-table__viewport thead th.col-fixed-right {
+  z-index: 6;
+}
+.data-table__viewport .cell-order-id {
+  display: inline-block;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-size-xs);
+}
+.data-table__viewport .cell-ellipsis {
+  display: block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.data-table__state:empty { display: none; }
+.data-table__state { padding: var(--space-2) var(--space-4); }
+.data-table__pager.pager { border-top: 1px solid var(--color-border); }
+.dt-col-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 160px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--control-radius);
+  box-shadow: var(--shadow-dialog);
+  padding: var(--space-2);
+  z-index: 30;
+  display: none;
+}
+.dt-col-panel.open { display: block; }
+.dt-col-panel label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 8px;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.dt-col-panel label:hover { background: var(--color-bg-hover); border-radius: 4px; }
+
+@media (max-width: 768px) {
+  .data-table__viewport {
+    max-height: min(55vh, calc(100vh - var(--topbar-h) - 260px));
+  }
+  .data-table__viewport .cell-order-id { max-width: 140px; }
+}

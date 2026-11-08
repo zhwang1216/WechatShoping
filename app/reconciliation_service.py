@@ -34,6 +34,12 @@ from .errors import (FieldNotModifiableError, InvalidFieldValueError,
                      SupplierRecordNotFoundError)
 from .excel_export import append_row
 from .normalizer import INVISIBLE_CHARS, money_str
+from .cost_validity import (
+    build_orders_lookup,
+    is_effective_supplier_cost,
+    revalidate_supplier_cost_records,
+    revalidate_supplier_costs_for_order_ids,
+)
 from .profit_service import is_reconciliation_scope
 from .refund_view import order_level_amount
 from .time_range import in_range
@@ -190,9 +196,12 @@ class ReconciliationService:
             if o.get("order_id"):
                 orders_by_id.setdefault(o["order_id"], []).append(o)
 
+        orders_lookup = orders_by_id
         main_index, sub_index, normalized_index = {}, {}, {}
         seen_norm = set()
         for c in costs:
+            if not is_effective_supplier_cost(c, orders_lookup):
+                continue
             rid = c.get("record_id")
             if c.get("main_order_id"):
                 main_index.setdefault(c["main_order_id"], []).append(c)
@@ -369,10 +378,12 @@ class ReconciliationService:
                 results.append(r)
                 matched_cost_ids.update(r.get("supplier_record_ids") or [])
 
-        # 孤儿供应商记录（未匹配成本，RC-002）
+        # 孤儿供应商记录（未匹配成本，RC-002）；无效/待核对成本不参与对账统计
         for c in costs:
             rid = c.get("record_id")
             if rid in matched_cost_ids:
+                continue
+            if not is_effective_supplier_cost(c, orders_lookup):
                 continue
             key = c.get("main_order_id") or c.get("supplier_order_id") or "未知订单键"
             results.append({
@@ -425,6 +436,19 @@ class ReconciliationService:
             d["records"] = anomalies
             d["updated_at"] = now
         self.repo.update("anomalies", repl_anomalies)
+
+        match_hints = {}
+        for r in results:
+            oid = r.get("order_id")
+            if not oid:
+                continue
+            for sid in r.get("supplier_record_ids") or []:
+                match_hints[sid] = oid
+        if match_hints:
+            revalidate_supplier_cost_records(
+                self.repo, match_hints.keys(),
+                op_log=self.op_log, operator=operator,
+                matched_order_hints=match_hints)
 
         summary = self._stats_of(results)
         summary["wechat_orders"] = len(reconcile_scope_order_ids)
@@ -552,6 +576,11 @@ class ReconciliationService:
             d["records"] = new_results
             d["updated_at"] = now
         self.repo.update("reconciliation_results", repl_results)
+
+        if action == "confirm" and sids:
+            revalidate_supplier_cost_records(
+                self.repo, sids, op_log=self.op_log, operator=operator,
+                matched_order_hints={s: order_id for s in sids})
 
         # 异常处理：人工确认后关闭相关待审异常（留痕），并合入本次新异常
         anomalies = self.repo.read("anomalies")["records"]
@@ -733,6 +762,10 @@ class ReconciliationService:
 
         before, after, changed = self._apply_field_modifications(
             order_id, fields, cost_updates, operator)
+
+        if fields and "order_status" in fields:
+            revalidate_supplier_costs_for_order_ids(
+                self.repo, {order_id}, op_log=self.op_log, operator=operator)
 
         recon = self.run_reconciliation(operator=operator)
 

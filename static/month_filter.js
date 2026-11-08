@@ -207,6 +207,15 @@ class MonthFilter {
     return {};
   }
 
+  /** 合并进 URLSearchParams 或普通对象（与 StoreScope.appendTo 对称） */
+  appendTo(params) {
+    Object.entries(this.getParams()).forEach(([k, v]) => {
+      if (typeof params.set === "function") params.set(k, v);
+      else params[k] = v;
+    });
+    return params;
+  }
+
   getLabel() {
     if (this.state.mode === "month") {
       const [y, m] = this.state.month.split("-").map(Number);

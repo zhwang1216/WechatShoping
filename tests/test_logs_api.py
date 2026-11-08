@@ -116,7 +116,10 @@ class TestLogsApi(unittest.TestCase):
         self.assertEqual(data["total"], 28)
         self.assertGreaterEqual(len(data["entries"]), 28)
         for e in data["entries"]:
-            for field in ("time", "action", "operator", "result", "detail"):
+            for field in ("time", "action", "operator", "result", "detail",
+                          "record_id", "module", "module_label",
+                          "operation_type_label", "result_label",
+                          "detail_summary"):
                 self.assertIn(field, e)
             self.assertEqual(e["store_id"], self.member_store)
             self.assertTrue(e["store_name"])
@@ -340,6 +343,13 @@ class TestLogsApi(unittest.TestCase):
         self.assertIn("Traceback", err)
         self.assertIn("File", err)
         self.assertIn("TypeError", err)
+
+    def test_logs_export_structured(self):
+        status, resp, headers = self.admin.get_binary(
+            f"/api/logs/export?month=2026-10&keyword={MARKER}")
+        self.assertEqual(status, 200, resp)
+        self.assertIn("spreadsheetml", headers.get("Content-Type", ""))
+        self.assertIn(".xlsx", headers.get("Content-Disposition", ""))
 
     # ---------- 项 11：共享查询函数页面无回归 ----------
     def test_shared_pages_regression(self):

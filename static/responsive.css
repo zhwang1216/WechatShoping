@@ -1,0 +1,262 @@
+/**
+ * 全站响应式布局
+ * 目标视口：1920×1080、1440×900、1280×800、1024×768、768×1024、390×844
+ * 原则：页面禁止整体横向滚动；表格在容器内横滚；侧栏可折叠/移动抽屉。
+ */
+
+/* ---------- 1. 页面级防撑破 ---------- */
+html {
+  overflow-x: clip;
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  overflow-x: clip;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.container.app-content {
+  container-type: inline-size;
+  container-name: app-content;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+.card,
+.table-card,
+.admin-filter-card,
+.month-filter,
+.store-scope,
+.list-filters {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.table-card .card-head,
+.admin-toolbar {
+  min-width: 0;
+}
+.card-head h3 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 2. 统计 / KPI 列数阶梯 ---------- */
+@container app-content (min-width: 1500px) {
+  .stat-grid {
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  }
+}
+@container app-content (max-width: 1279px) {
+  .stat-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+}
+@container app-content (max-width: 1023px) {
+  .stat-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1280px) {
+  :root {
+    --layout-gutter: 18px;
+    --layout-max-width: 100%;
+  }
+  .stat-item .value { font-size: 18px; }
+}
+
+@media (max-width: 1024px) {
+  :root { --layout-gutter: 16px; --card-padding: 14px; }
+  .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .topbar { padding-left: 16px; padding-right: 16px; }
+  .filter-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .stat-grid,
+  .bs-grid,
+  .trend-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filter-grid .filter-actions {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: stretch;
+  }
+  .kv-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .stat-grid { gap: 8px; }
+  .stat-item { padding: 12px; }
+  .stat-item .value { font-size: 17px; }
+  .filter-grid { grid-template-columns: 1fr; }
+  .page-desc { max-width: none; }
+  .card-head .head-actions .btn {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 390px) {
+  .stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .topbar .auth-area .who {
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+/* ---------- 3. 筛选区换行与触控目标 ---------- */
+.filter-grid .filter-item input,
+.filter-grid .filter-item select {
+  max-width: 100%;
+}
+.list-filters .mf-main,
+.list-filters .store-scope.multi {
+  width: 100%;
+}
+.ss-select {
+  flex: 1 1 140px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.filter-actions .btn,
+.pager .controls button,
+.pager select {
+  min-height: var(--btn-height-md);
+}
+
+/* ---------- 4. 表格横滚（非 DataTable 的 .table-wrap） ---------- */
+.table-wrap table {
+  width: max-content;
+  min-width: 100%;
+}
+.table-card > .table-wrap {
+  border-top: 1px solid var(--border);
+}
+
+/* ---------- 5. 居中弹窗高度自适应 ---------- */
+.modal-overlay:not(.modal-drawer) .modal-card.um-card {
+  margin-top: auto;
+  margin-bottom: auto;
+  flex-shrink: 0;
+}
+.modal-overlay:not(.modal-drawer) {
+  align-items: flex-start;
+}
+@supports (height: 100dvh) {
+  .um-card .um-body {
+    max-height: min(72vh, calc(100dvh - 140px));
+  }
+}
+@media (max-height: 720px) {
+  .um-card .um-body {
+    max-height: calc(100dvh - 112px);
+  }
+  .modal-overlay:not(.modal-drawer) {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+}
+
+/* ---------- 6. 详情抽屉窄屏 ---------- */
+.modal-overlay.modal-drawer {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+@media (max-width: 768px) {
+  .modal-overlay.modal-drawer {
+    padding: 0;
+    align-items: stretch;
+  }
+  .modal-overlay.modal-drawer .modal-card,
+  .modal-overlay.modal-drawer .um-card {
+    max-width: 100% !important;
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+  .modal-overlay.modal-drawer .um-body {
+    max-height: none;
+    padding-bottom: max(20px, env(safe-area-inset-bottom, 0px));
+  }
+}
+@media (max-width: 768px) and (orientation: landscape) {
+  .modal-overlay.modal-drawer .um-card .um-head {
+    padding-top: max(10px, env(safe-area-inset-top, 0px));
+  }
+}
+
+/* ---------- 7. 工具栏 / 按钮避免遮挡 ---------- */
+.card-head {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.card-head .head-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+  max-width: 100%;
+}
+.table-toolbar,
+.store-ops,
+.admin-ops {
+  flex-wrap: wrap;
+}
+.dropdown-menu {
+  max-height: min(280px, 50dvh);
+  overflow-y: auto;
+}
+.data-table__pager.pager,
+.table-card > .pager {
+  position: relative;
+  z-index: 2;
+  background: var(--card);
+}
+
+/* ---------- 8. 安全区域（刘海屏 /  home 指示条） ---------- */
+@supports (padding: max(0px)) {
+  .topbar {
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+  .container.app-content {
+    padding-left: max(var(--layout-gutter), env(safe-area-inset-left));
+    padding-right: max(var(--layout-gutter), env(safe-area-inset-right));
+    padding-bottom: max(var(--space-8), env(safe-area-inset-bottom));
+  }
+  #toast-root {
+    right: max(16px, env(safe-area-inset-right));
+    top: calc(var(--topbar-h) + max(8px, env(safe-area-inset-top)));
+  }
+}
+
+/* ---------- 9. 大屏内容区（外接显示器） ---------- */
+@media (min-width: 1600px) {
+  :root {
+    --layout-max-width: min(1680px, calc(100vw - var(--sidebar-w) - 48px));
+  }
+  body.sidebar-collapsed {
+    --layout-max-width: min(1680px, calc(100vw - var(--sidebar-w-collapsed) - 48px));
+  }
+}

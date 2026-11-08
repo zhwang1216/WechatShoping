@@ -8,10 +8,14 @@
 </head>
 <body>
 <!--@app-shell-->
-  <div class="page-title">用户管理</div>
-  <div class="page-desc">管理员可启用/停用账号、重置密码、编辑用户名、清除店铺数据、删除账号。用户名即登录账号，编辑用户名不影响密码、角色、状态与店铺归属；店铺归属管理（修改归属 / 标记待分配 / 迁移清点）已移至「店铺管理」页。管理员无法对本人账号执行停用、重置密码、清除数据或删除操作（编辑用户名除外）。</div>
+  <div class="admin-page-head">
+    <div class="page-title">用户管理</div>
+    <div class="page-desc">管理成员账号与权限。店铺归属、创建与迁移请在「店铺管理」处理。管理员不持有经营店铺；不得对本人执行停用、重置密码、清数或删除（可改用户名）。</div>
+  </div>
 
-  <div class="card">
+  <div id="user-summary" class="user-summary-pills" aria-live="polite"></div>
+
+  <div class="card admin-filter-card">
     <div class="filter-grid">
       <div class="filter-item"><label>用户名关键词</label><input id="f-username" placeholder="用户名包含"></div>
       <div class="filter-item"><label>账号状态</label>
@@ -36,16 +40,14 @@
   </div>
 
   <div class="card table-card">
-    <div class="card-head"><h3 style="margin:0">用户列表</h3>
-      <div class="head-actions">
-        <span class="hint" id="table-hint"></span>
-        <button class="btn" id="btn-create-user" type="button" onclick="location.href='/users/create'">+ 创建用户</button>
-      </div>
+    <div class="card-head admin-toolbar">
+      <h3 style="margin:0">用户列表 <span class="hint" id="table-hint"></span></h3>
+      <button class="btn" id="btn-create-user" type="button" onclick="location.href='/users/create'">创建用户</button>
     </div>
     <div class="table-wrap">
-      <table id="user-table">
+      <table id="user-table" class="admin-table">
         <thead><tr>
-          <th>用户 ID</th><th>用户名</th><th>角色</th><th>状态</th><th>店铺</th><th>创建时间</th><th>最近登录</th><th>操作</th>
+          <th>用户 ID</th><th>用户名</th><th>角色</th><th>状态</th><th>名下店铺</th><th>创建时间</th><th>最近登录</th><th class="col-op">操作</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -106,46 +108,58 @@ async function load() {
     state.innerHTML = "";
     const pages = Math.max(1, Math.ceil(data.total / data.page_size));
     document.getElementById("table-hint").textContent =
-      `共 ${data.total} 个用户 · 第 ${data.page}/${pages} 页`;
-    if (!data.users.length) {
+      `· 共 ${data.total} 人 · 第 ${data.page}/${pages} 页`;
+    const users = data.users || [];
+    let nActive = 0, nDisabled = 0, nMember = 0, nAdmin = 0;
+    users.forEach(u => {
+      if (u.status === "active") nActive++;
+      else nDisabled++;
+      if (u.role === "member") nMember++;
+      else if (u.role === "admin") nAdmin++;
+    });
+    document.getElementById("user-summary").innerHTML = [
+      `本页启用 ${nActive}`,
+      `本页停用 ${nDisabled}`,
+      `成员 ${nMember}`,
+      `管理员 ${nAdmin}`,
+    ].map(t => `<span>${esc(t)}</span>`).join("");
+    if (!users.length) {
+      document.getElementById("user-summary").innerHTML = "";
       state.innerHTML = `<div class="empty-state"><div class="icon">👥</div>暂无用户：当前筛选条件下没有匹配用户</div>`;
       document.getElementById("user-pager").innerHTML = "";
       return;
     }
-    tbody.innerHTML = data.users.map(u => {
+    tbody.innerHTML = users.map(u => {
       const isSelf = u.user_id === currentUserId;
-      const editBtn = `<button class="link-btn" data-act="rename" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}">编辑</button>`;
+      const storeTxt = (u.store_names || []).filter(Boolean);
+      const storeCell = storeTxt.length
+        ? esc(storeTxt.join("、"))
+        : (u.role === "admin" ? "—" : '<span style="color:var(--text-light)">无店铺</span>');
       const actions = isSelf
-        ? `${editBtn}<span style="color:var(--text-light);font-size:12px">当前账号</span>`
-        : `${editBtn}
-           <button class="link-btn" data-act="toggle" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}" data-status="${esc(u.status)}">${u.status === "active" ? "停用" : "启用"}</button>
+        ? `<div class="admin-ops"><button class="link-btn" data-act="rename" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}">改用户名</button><span class="hint">当前账号</span></div>`
+        : `<div class="admin-ops">
+           <button class="link-btn" data-act="rename" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}">改用户名</button>
            <button class="link-btn" data-act="reset" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}">重置密码</button>
-           <button class="link-btn" data-act="clear" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}" style="color:var(--danger)">清除数据</button>
-           <button class="link-btn" data-act="delete" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}" style="color:var(--danger)">删除账号</button>`;
+           <button class="link-btn" data-act="toggle" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}" data-status="${esc(u.status)}">${u.status === "active" ? "停用" : "启用"}</button>
+           <button class="link-btn" data-act="more" data-uid="${esc(u.user_id)}" data-name="${esc(u.username)}" type="button">更多 ▾</button>
+         </div>`;
       return `<tr>
       <td style="font-family:monospace;font-size:12px">${esc(u.user_id)}</td>
       <td>${esc(u.username)}${isSelf ? ` <span class="badge blue">本人</span>` : ""}</td>
       <td>${u.role === "admin" ? '<span class="badge blue">管理员</span>' : '<span class="badge gray">成员</span>'}</td>
       <td>${u.status === "active" ? '<span class="badge green">启用</span>' : '<span class="badge red">停用</span>'}</td>
-      <td>${esc((u.store_names || []).filter(Boolean).join("、") || "—")}</td>
+      <td>${storeCell}</td>
       <td style="white-space:nowrap">${fmtT(u.created_at)}</td>
       <td style="white-space:nowrap">${fmtT(u.last_login_at)}</td>
-      <td style="white-space:nowrap">${actions}</td>
+      <td>${actions}</td>
     </tr>`;
     }).join("");
     tbody.querySelectorAll("button[data-act]").forEach(b => {
-      b.onclick = () => {
-        if (b.dataset.act === "rename") {
-          openRenameUser(b.dataset.uid, b.dataset.name);
-        } else if (b.dataset.act === "toggle") {
-          confirmToggle(b.dataset.uid, b.dataset.name, b.dataset.status);
-        } else if (b.dataset.act === "reset") {
-          openResetPassword(b.dataset.uid, b.dataset.name);
-        } else if (b.dataset.act === "clear") {
-          openClearData(b.dataset.uid, b.dataset.name);
-        } else {
-          openDeleteUser(b.dataset.uid, b.dataset.name);
-        }
+      b.onclick = (ev) => {
+        if (b.dataset.act === "rename") openRenameUser(b.dataset.uid, b.dataset.name);
+        else if (b.dataset.act === "toggle") confirmToggle(b.dataset.uid, b.dataset.name, b.dataset.status);
+        else if (b.dataset.act === "reset") openResetPassword(b.dataset.uid, b.dataset.name);
+        else if (b.dataset.act === "more") openUserMoreMenu(b.dataset.uid, b.dataset.name, b);
       };
     });
     renderPager(document.getElementById("user-pager"), {
@@ -157,6 +171,32 @@ async function load() {
   } catch (e) {
     state.innerHTML = `<div class="error-state"><div class="msg">${esc(e.message || "请求失败")}</div><button class="btn secondary" onclick="load()">重试</button></div>`;
   }
+}
+
+function closeUserMenus() {
+  document.querySelectorAll(".dropdown-menu.open").forEach(m => m.remove());
+}
+document.addEventListener("click", e => {
+  if (!e.target.closest(".dropdown-menu") && !e.target.closest('[data-act="more"]')) {
+    closeUserMenus();
+  }
+});
+
+function openUserMoreMenu(userId, username, anchor) {
+  closeUserMenus();
+  const menu = document.createElement("div");
+  menu.className = "dropdown-menu open";
+  const items = [
+    { label: "清除店铺数据", danger: true, onClick: () => openClearData(userId, username) },
+    { label: "删除账号", danger: true, onClick: () => openDeleteUser(userId, username) },
+  ];
+  menu.innerHTML = items.map(it =>
+    `<button type="button" class="dropdown-item${it.danger ? " danger" : ""}">${esc(it.label)}</button>`
+  ).join("");
+  anchor.parentNode.appendChild(menu);
+  menu.querySelectorAll(".dropdown-item").forEach((btn, i) => {
+    btn.onclick = () => { closeUserMenus(); items[i].onClick(); };
+  });
 }
 
 document.getElementById("btn-query").onclick = () => { syncFilter(); STATE.page = 1; load(); };
@@ -222,6 +262,7 @@ function openRenameUser(userId, username) {
       toast(`用户名已修改：${username} → ${r.username}`, "success");
       closeModal();
       load();
+      window.dispatchEvent(new CustomEvent("store-scope-refresh"));
     } catch (e) {
       msg.textContent = e.message || "修改失败，请重试";
       msg.style.display = "block";
@@ -239,6 +280,7 @@ function confirmToggle(userId, username, status) {
     await API.post(`/api/users/${userId}/status`, { action });
     toast(`已${verb}用户 ${username}`);
     load();
+    window.dispatchEvent(new CustomEvent("store-scope-refresh"));
   });
 }
 

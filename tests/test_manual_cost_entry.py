@@ -115,19 +115,21 @@ class TestManualCostEntry(unittest.TestCase):
         self.assertEqual(resp["code"], 0)
         return resp["data"]
 
-    def _unmatched_supplier(self, key="S8888"):
-        status, resp = self._get(
-            f"/api/reconciliation?order_id={key}&match_status=unmatched_supplier")
+    def _orphan_supplier_cost(self, key="S8888"):
+        status, resp = self._get("/api/data/supplier_costs")
         self.assertEqual(status, 200)
-        rows = resp["data"]["results"]
-        self.assertEqual(len(rows), 1, f"应有一条 {key} 未匹配成本记录")
-        return rows[0]
+        rec = next(
+            (r for r in resp["data"]["records"]
+             if r.get("main_order_id") == key), None)
+        self.assertIsNotNone(rec, f"应保留 {key} 供应商成本原始记录")
+        self.assertEqual(
+            (rec.get("business_validity") or {}).get("validity_status"),
+            "pending",
+            "无微信订单匹配的成本应为待核对")
+        return rec
 
     def _supplier_record_id(self, key="S8888"):
-        r = self._unmatched_supplier(key)
-        ids = r.get("supplier_record_ids", [])
-        self.assertEqual(len(ids), 1, "未匹配成本记录应关联一条供应商记录")
-        return ids[0]
+        return self._orphan_supplier_cost(key)["record_id"]
 
     def _supplier_cost_record(self, record_id):
         status, resp = self._get("/api/data/supplier_costs")
@@ -148,11 +150,10 @@ class TestManualCostEntry(unittest.TestCase):
     # ---------- 1. 未匹配记录成功录入综合成本 ----------
     def test_01_unmatched_manual_cost_entry(self):
         self._run_recon()
-        r = self._unmatched_supplier("S8888")
-        self.assertEqual(r["match_status"], "unmatched_supplier")
-        self.assertEqual(r["cost"]["total_amount"], "50.00")
+        rec = self._orphan_supplier_cost("S8888")
+        self.assertEqual(rec["cost_breakdown"]["total_amount"], "50.00")
 
-        sid = r["supplier_record_ids"][0]
+        sid = rec["record_id"]
         status, resp = self._post("/api/reconciliation/manual-cost", {
             "supplier_record_id": sid,
             "total_amount": "45.00",
@@ -196,17 +197,16 @@ class TestManualCostEntry(unittest.TestCase):
     # ---------- 4. 手动录入不改变匹配状态 ----------
     def test_04_match_status_unchanged(self):
         self._run_recon()
-        r = self._unmatched_supplier("S8888")
-        self.assertEqual(r["match_status"], "unmatched_supplier")
-        self.assertEqual(r["cost"]["total_amount"], "45.00")
+        rec = self._orphan_supplier_cost("S8888")
+        self.assertEqual(rec["cost_breakdown"]["total_amount"], "45.00")
 
     # ---------- 5. 刷新/重启后金额仍存在 ----------
     def test_05_persistence_after_restart(self):
         self.env.restart()
         self._run_recon()
-        r = self._unmatched_supplier("S8888")
-        self.assertEqual(r["cost"]["total_amount"], "45.00")
-        rec = self._supplier_cost_record(r["supplier_record_ids"][0])
+        orphan = self._orphan_supplier_cost("S8888")
+        self.assertEqual(orphan["cost_breakdown"]["total_amount"], "45.00")
+        rec = self._supplier_cost_record(orphan["record_id"])
         self.assertEqual(rec["manual_cost_source"], "manual")
         self.assertEqual(rec["manual_cost_modified_by"], "tester")
 
@@ -227,9 +227,9 @@ class TestManualCostEntry(unittest.TestCase):
         self.assertEqual(resp["code"], 0)
 
         self._run_recon()
-        r = self._unmatched_supplier("S8888")
-        self.assertEqual(r["cost"]["total_amount"], "55.00")
-        rec = self._supplier_cost_record(r["supplier_record_ids"][0])
+        orphan = self._orphan_supplier_cost("S8888")
+        self.assertEqual(orphan["cost_breakdown"]["total_amount"], "55.00")
+        rec = self._supplier_cost_record(orphan["record_id"])
         self.assertNotIn("manual_cost_source", rec)
         self.assertNotIn("manual_cost_modified_at", rec)
         self.assertNotIn("manual_cost_modified_by", rec)
@@ -259,9 +259,9 @@ class TestManualCostEntry(unittest.TestCase):
         self.assertEqual(resp["code"], 0)
 
         self._run_recon()
-        r = self._unmatched_supplier("S8888")
-        self.assertEqual(r["cost"]["total_amount"], "45.00")
-        rec = self._supplier_cost_record(r["supplier_record_ids"][0])
+        orphan = self._orphan_supplier_cost("S8888")
+        self.assertEqual(orphan["cost_breakdown"]["total_amount"], "45.00")
+        rec = self._supplier_cost_record(orphan["record_id"])
         self.assertEqual(rec["manual_cost_source"], "manual")
         self.assertEqual(rec["manual_cost_modified_by"], "tester")
 
@@ -335,12 +335,13 @@ class TestManualCostEntry(unittest.TestCase):
         self.assertEqual(resp["code"], 0)
 
         status, resp = other.get(
-            f"/api/reconciliation?order_id=S7777&match_status=unmatched_supplier"
-            f"&store_id={other_store}")
+            f"/api/data/supplier_costs?target_store_id={other_store}")
         self.assertEqual(status, 200)
-        rows = resp["data"]["results"]
-        self.assertEqual(len(rows), 1)
-        other_sid = rows[0]["supplier_record_ids"][0]
+        orphan = next(
+            (r for r in resp["data"]["records"]
+             if r.get("main_order_id") == "S7777"), None)
+        self.assertIsNotNone(orphan)
+        other_sid = orphan["record_id"]
 
         status, resp = other.post("/api/reconciliation/manual-cost", {
             "supplier_record_id": other_sid,

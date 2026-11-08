@@ -36,14 +36,22 @@ var ColumnRenderer = {
       var cls = [];
       if (c.align === "right" || c.align === "center") cls.push(c.align === "right" ? "num" : "center");
       if (c.className) cls.push(c.className);
-      if (c.fixed === "left" || c.fixed === "right" || c.fixed === true) cls.push("col-op");
+      if (c.fixed === "right") cls.push("col-fixed-right");
+      else if (c.fixed === "left" || c.fixed === true) cls.push("col-op");
       var style = "";
       if (c.width != null) style += "width:" + (typeof c.width === "number" ? c.width + "px" : c.width) + ";";
       if (c.minWidth != null) style += "min-width:" + (typeof c.minWidth === "number" ? c.minWidth + "px" : c.minWidth) + ";";
-      var sortAttr = c.sortable ? ' data-sort="' + (typeof c.sortable === "object" ? c.sortable.field || c.key : c.key) + '"' : "";
+      var sortKey = null;
+      if (c.sortable) {
+        if (typeof c.sortable === "object") sortKey = c.sortable.field || c.key;
+        else if (typeof c.sortable === "string") sortKey = c.sortable;
+        else sortKey = c.key;
+      }
+      var sortAttr = sortKey ? ' data-sort="' + esc(sortKey) + '"' : "";
       var sortClass = c.sortable ? " sortable" : "";
+      var keyAttr = c.key ? ' data-col-key="' + esc(String(c.key)) + '"' : "";
       ths.push("<th" + (cls.length ? ' class="' + cls.join(" ") + sortClass + '"' : ' class="' + sortClass.trim() + '"') +
-        (style ? ' style="' + style + '"' : "") + sortAttr + ">" + esc(c.title || "") + "</th>");
+        (style ? ' style="' + style + '"' : "") + sortAttr + keyAttr + ">" + esc(c.title || "") + "</th>");
     }
     return "<thead><tr>" + ths.join("") + "</tr></thead>";
   },
@@ -60,7 +68,8 @@ var ColumnRenderer = {
         var cls = [];
         if (c.align === "right" || c.align === "center") cls.push(c.align === "right" ? "num" : "center");
         if (c.className) cls.push(c.className);
-        if (c.fixed === "left" || c.fixed === "right" || c.fixed === true) cls.push("col-op");
+        if (c.fixed === "right") cls.push("col-fixed-right");
+      else if (c.fixed === "left" || c.fixed === true) cls.push("col-op");
         var content = this.renderCell(row, c, i);
         var style = "";
         if (c.ellipsis) style += "overflow:hidden;text-overflow:ellipsis;";
@@ -138,7 +147,10 @@ _NativeTableAdapter.prototype.bindTable = function (el) {
   return this;
 };
 _NativeTableAdapter.prototype.renderHead = function (columns) {
-  if (this.theadEl) this.theadEl.innerHTML = ColumnRenderer.renderHead(columns).replace(/<\/?thead>/g, "").replace(/<\/?tr>/g, "");
+  if (!this.theadEl) return;
+  var full = ColumnRenderer.renderHead(columns);
+  var m = full.match(/<tr>([\s\S]*)<\/tr>/);
+  this.theadEl.innerHTML = m ? "<tr>" + m[1] + "</tr>" : full;
 };
 _NativeTableAdapter.prototype.renderBody = function (data, columns, rowKey) {
   if (this.tbodyEl) this.tbodyEl.innerHTML = ColumnRenderer.renderBody(data, columns, rowKey).replace(/<\/?tbody>/g, "");

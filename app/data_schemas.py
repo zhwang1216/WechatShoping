@@ -95,7 +95,7 @@ BUSINESS_FILES = {
     },
     "supplier_costs": {
         "file": "supplier_costs.json",
-        "description": "供应商成本标准记录（supplier_cost_line，成本行级）",
+        "description": "供应商成本标准记录（supplier_cost_line，成本行级；含 business_validity）",
         "required_keys": ["version", "updated_at", "records"],
         "collection_key": "records",
         "collection_type": list,

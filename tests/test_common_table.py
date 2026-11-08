@@ -40,6 +40,8 @@ class TestCommonTable(unittest.TestCase):
         _, html, _ = self.admin.get_page("/orders")
         self.assertIn("/static/common_table.js", html,
                        "orders 页面应引入 common_table.js")
+        self.assertIn("/static/data_table.js", html,
+                       "orders 页面应引入 data_table.js")
 
     def test_03_static_namespaces(self):
         """CommonTable 挂载 NativeAdapter/ModalAdapter/DataAdapter/ColumnRenderer"""
@@ -89,6 +91,22 @@ class TestCommonTable(unittest.TestCase):
         self.assertIn('class="table-wrap"', html, "table-wrap 结构保留")
         self.assertIn("<table", html, "table 元素保留")
         self.assertIn("<thead>", html, "thead 元素保留")
+        self.assertIn("useDataTable: true", html, "orders 应启用 DataTable")
+
+    def test_11_data_table_served(self):
+        """data_table.js 可被静态服务且导出 DataTable"""
+        st, body, _ = self.admin.get_binary("/static/data_table.js")
+        self.assertEqual(st, 200)
+        self.assertIn(b"global.DataTable", body)
+        self.assertIn(b"data-table__viewport", body)
+
+    def test_12_migrated_pages_include_data_table(self):
+        """已迁移列表页均引入 data_table.js"""
+        for path in ("/refund-orders", "/supplier-costs", "/anomalies", "/logs"):
+            with self.subTest(path=path):
+                _, html, _ = self.admin.get_page(path)
+                self.assertIn("/static/data_table.js", html, path)
+                self.assertIn("useDataTable: true", html, path)
 
     def test_10_profit_parts_table_exception(self):
         """既有页面回归 — profit 页面 parts-table 例外保留"""

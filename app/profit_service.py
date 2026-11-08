@@ -42,7 +42,7 @@ from .errors import ProfitServiceError
 from .excel_export import append_row
 from .normalizer import money_str
 from .refund_view import build_refund_views, order_level_amount
-from .time_range import MONTH_RE, in_range
+from .time_range import MONTH_RE, in_range, month_bounds
 
 # 演进策略（spec DFX 4.4.3 / 6.2.3，design.md 1.2.5）：
 # 后续若改变 UNSHIPPED_STATUSES / PENDING_REVIEW_STATUSES /
@@ -251,15 +251,18 @@ class ProfitService:
 
     # ==================== 执行核算 ====================
     def run_calculation(self, start=None, end=None, operator="admin"):
+        from .cost_validity import build_orders_lookup, is_effective_supplier_cost
+
         policies = self._policies()
         orders = self.repo.read("orders")["records"]
         costs = self.repo.read("supplier_costs")["records"]
         recons = self.repo.read("reconciliation_results")["records"]
 
-        orders_by_id = {}
-        for o in orders:
-            if o.get("order_id"):
-                orders_by_id.setdefault(o["order_id"], []).append(o)
+        orders_by_id = build_orders_lookup(orders)
+        effective_cost_ids = {
+            c.get("record_id") for c in costs
+            if is_effective_supplier_cost(c, orders_by_id) and c.get("record_id")
+        }
 
         scope = []
         excluded_unshipped = 0
@@ -288,7 +291,8 @@ class ProfitService:
         for r in recons:
             if r.get("record_type") == "order_match" and r.get("order_id"):
                 recon_by_order[r["order_id"]] = r
-        cost_by_id = {c.get("record_id"): c for c in costs}
+        cost_by_id = {c.get("record_id"): c for c in costs
+                      if c.get("record_id") in effective_cost_ids}
         refund_by_order = {v["order_id"]: v for v in build_refund_views(orders)}
 
         calc_id = ("calc_" + datetime.now().strftime("%Y%m%d%H%M%S%f")
@@ -926,7 +930,8 @@ class ProfitService:
         return list(by_order.values())
 
     def list_results(self, start=None, end=None, order_id=None,
-                     profit_status=None, calc_id=None, page=1, size=50):
+                     profit_status=None, calc_id=None, page=1, size=50,
+                     store_id=None, store_name=None):
         target = calc_id or (self._latest_run() or {}).get("record_id")
         records = [r for r in self.repo.read("profit_statements")["records"]
                    if r.get("record_type") == "order_profit"]
@@ -952,11 +957,15 @@ class ProfitService:
         rows.reverse()
         total = len(rows)
         start_idx = (page - 1) * size
+        stats = self._stats_of(rows)
         return {
             "total": total, "page": page, "size": size,
             "pages": (total + size - 1) // size,
             "results": rows[start_idx:start_idx + size],
-            "statistics": self._stats_of(rows),
+            "statistics": stats,
+            "analysis": self._analysis_of(
+                rows, store_id=store_id, store_name=store_name),
+            "ad_expense": self._ad_expense_summary(start, end),
             "calculation_id": target,
             "has_calculation": bool(target),
             "latest_run": self._latest_run(),
@@ -1195,6 +1204,190 @@ class ProfitService:
         return filename, buf.getvalue()
 
     # ==================== 内部 ====================
+    def _ad_expense_summary(self, start=None, end=None):
+        """筛选区间内各自然月广告花费（仅登记项汇总，独立核算）。"""
+        def overlaps(month):
+            if not MONTH_RE.match(month or ""):
+                return False
+            ms, me = month_bounds(month)
+            if start and me <= start:
+                return False
+            if end and ms >= end:
+                return False
+            return True
+
+        total = Decimal("0")
+        months = []
+        for r in self.repo.read("ad_expenses")["records"]:
+            m = r.get("month")
+            if not overlaps(m):
+                continue
+            amt = _dec(r.get("amount"))
+            total += amt
+            months.append({
+                "month": m,
+                "amount": money_str(amt),
+                "recorded": True,
+                "note": r.get("note"),
+            })
+        months.sort(key=lambda x: x.get("month") or "")
+        editable = None
+        if start and end:
+            sm = (start or "")[:7]
+            if MONTH_RE.match(sm or ""):
+                ms, me = month_bounds(sm)
+                if start == ms and end == me:
+                    editable = sm
+        return {
+            "total": money_str(total),
+            "months": months,
+            "editable_month": editable,
+        }
+
+    @staticmethod
+    def _analysis_of(rows, store_id=None, store_name=None):
+        """与 statistics 同源、同筛选的全量分析（禁止仅对当前页明细做统计）。"""
+        structure = {
+            "product_sales": Decimal("0"),
+            "net_revenue": Decimal("0"),
+            "product_cost": Decimal("0"),
+            "courier_fee": Decimal("0"),
+            "composite_cost": Decimal("0"),
+            "refund_success": Decimal("0"),
+            "technical_service_fee": Decimal("0"),
+            "product_gross_profit": Decimal("0"),
+            "operating_contribution_profit": Decimal("0"),
+        }
+        monthly = {}
+        products = {}
+        stores = {}
+
+        def bump(store_key, sname, field, val):
+            if not store_key:
+                return
+            slot = stores.setdefault(store_key, {
+                "store_id": store_key,
+                "store_name": sname or store_key,
+                "order_count": 0,
+                "profit_total": Decimal("0"),
+                "product_gross_profit": Decimal("0"),
+                "composite_cost": Decimal("0"),
+            })
+            if field == "order":
+                slot["order_count"] += 1
+            elif field == "profit":
+                slot["profit_total"] += val
+            elif field == "gross":
+                slot["product_gross_profit"] += val
+            elif field == "composite":
+                slot["composite_cost"] += val
+
+        for r in rows:
+            a = r.get("amounts") or {}
+            sid = r.get("store_id") or store_id
+            sname = r.get("store_name") or store_name
+            bump(sid, sname, "order", 0)
+            if a.get("product_sales_amount") is not None:
+                structure["product_sales"] += _dec(a["product_sales_amount"])
+            if a.get("net_revenue") is not None:
+                structure["net_revenue"] += _dec(a["net_revenue"])
+            if a.get("product_cost") is not None:
+                structure["product_cost"] += _dec(a["product_cost"])
+            if a.get("courier_fee") is not None:
+                structure["courier_fee"] += _dec(a["courier_fee"])
+            if a.get("composite_cost") is not None:
+                cc = _dec(a["composite_cost"])
+                structure["composite_cost"] += cc
+                bump(sid, sname, "composite", cc)
+            if a.get("refund_success_amount") is not None:
+                structure["refund_success"] += _dec(a["refund_success_amount"])
+            if a.get("technical_service_fee") is not None:
+                structure["technical_service_fee"] += _dec(
+                    a["technical_service_fee"])
+            if a.get("product_gross_profit") is not None:
+                g = _dec(a["product_gross_profit"])
+                structure["product_gross_profit"] += g
+                bump(sid, sname, "gross", g)
+            if (r.get("profit_status") in CALCULATED_LIKE
+                    and a.get("operating_contribution_profit") is not None):
+                p = _dec(a["operating_contribution_profit"])
+                structure["operating_contribution_profit"] += p
+                bump(sid, sname, "profit", p)
+
+            month = (r.get("order_time") or "")[:7]
+            if MONTH_RE.match(month or ""):
+                bucket = monthly.setdefault(month, {
+                    "month": month,
+                    "order_count": 0,
+                    "net_revenue": Decimal("0"),
+                    "composite_cost": Decimal("0"),
+                    "product_gross_profit": Decimal("0"),
+                    "operating_contribution_profit": Decimal("0"),
+                })
+                bucket["order_count"] += 1
+                if a.get("net_revenue") is not None:
+                    bucket["net_revenue"] += _dec(a["net_revenue"])
+                if a.get("composite_cost") is not None:
+                    bucket["composite_cost"] += _dec(a["composite_cost"])
+                if a.get("product_gross_profit") is not None:
+                    bucket["product_gross_profit"] += _dec(
+                        a["product_gross_profit"])
+                if (r.get("profit_status") in CALCULATED_LIKE
+                        and a.get("operating_contribution_profit") is not None):
+                    bucket["operating_contribution_profit"] += _dec(
+                        a["operating_contribution_profit"])
+
+            pinfo = r.get("product_info") or {}
+            title = pinfo.get("title") or (
+                (pinfo.get("titles") or [None])[0]) or "未命名商品"
+            key = title
+            prod = products.setdefault(key, {
+                "title": title,
+                "order_count": 0,
+                "product_sales": Decimal("0"),
+                "product_gross_profit": Decimal("0"),
+            })
+            prod["order_count"] += 1
+            if a.get("product_sales_amount") is not None:
+                prod["product_sales"] += _dec(a["product_sales_amount"])
+            if a.get("product_gross_profit") is not None:
+                prod["product_gross_profit"] += _dec(a["product_gross_profit"])
+
+        for k in structure:
+            structure[k] = money_str(structure[k])
+        for m, b in monthly.items():
+            for fk in ("net_revenue", "composite_cost", "product_gross_profit",
+                       "operating_contribution_profit"):
+                b[fk] = money_str(b[fk])
+        ranking = sorted(
+            products.values(),
+            key=lambda x: _dec(x["product_gross_profit"]), reverse=True)[:15]
+        for p in ranking:
+            p["product_sales"] = money_str(p["product_sales"])
+            p["product_gross_profit"] = money_str(p["product_gross_profit"])
+        store_list = []
+        for slot in stores.values():
+            store_list.append({
+                "store_id": slot["store_id"],
+                "store_name": slot["store_name"],
+                "order_count": slot["order_count"],
+                "profit_total": money_str(slot["profit_total"]),
+                "product_gross_profit": money_str(
+                    slot["product_gross_profit"]),
+                "composite_cost": money_str(slot["composite_cost"]),
+            })
+        store_list.sort(key=lambda x: _dec(x["profit_total"]), reverse=True)
+        # 供多店 _merge_dicts 按 key 合并
+        monthly_out = {b["month"]: b for b in monthly.values()}
+        ranking_out = {p["title"]: p for p in ranking}
+        stores_out = {s["store_id"]: s for s in store_list}
+        return {
+            "structure": structure,
+            "monthly_trend": monthly_out,
+            "product_ranking": ranking_out,
+            "stores": stores_out,
+        }
+
     @staticmethod
     def _stats_of(rows):
         stats = {"total": len(rows), "calculated": 0,
@@ -1204,6 +1397,10 @@ class ProfitService:
                  "courier_fee_total": Decimal("0"),
                  "composite_cost_total": Decimal("0"),
                  "technical_service_fee": Decimal("0"),
+                 "product_sales_total": Decimal("0"),
+                 "product_gross_profit_total": Decimal("0"),
+                 "net_revenue_total": Decimal("0"),
+                 "refund_success_total": Decimal("0"),
                  "product_cost_missing_count": 0,
                  "courier_fee_missing_count": 0}
         for r in rows:
@@ -1232,6 +1429,16 @@ class ProfitService:
             tech = a.get("technical_service_fee")
             if tech is not None:
                 stats["technical_service_fee"] += _dec(tech)
+            if a.get("product_sales_amount") is not None:
+                stats["product_sales_total"] += _dec(a["product_sales_amount"])
+            if a.get("product_gross_profit") is not None:
+                stats["product_gross_profit_total"] += _dec(
+                    a["product_gross_profit"])
+            if a.get("net_revenue") is not None:
+                stats["net_revenue_total"] += _dec(a["net_revenue"])
+            if a.get("refund_success_amount") is not None:
+                stats["refund_success_total"] += _dec(
+                    a["refund_success_amount"])
         stats["profit_total"] = money_str(stats["profit_total"])
         stats["product_cost_total"] = money_str(
             stats["product_cost_total"])
@@ -1241,6 +1448,29 @@ class ProfitService:
             stats["composite_cost_total"])
         stats["technical_service_fee"] = money_str(
             stats["technical_service_fee"])
+        stats["product_sales_total"] = money_str(
+            stats["product_sales_total"])
+        stats["product_gross_profit_total"] = money_str(
+            stats["product_gross_profit_total"])
+        stats["net_revenue_total"] = money_str(stats["net_revenue_total"])
+        stats["refund_success_total"] = money_str(
+            stats["refund_success_total"])
+        complete = (stats["product_cost_missing_count"] == 0
+                    and stats["courier_fee_missing_count"] == 0)
+        stats["cost_breakdown_complete"] = complete
+        if complete:
+            parts_sum = (_dec(stats["product_cost_total"])
+                         + _dec(stats["courier_fee_total"]))
+            composite = _dec(stats["composite_cost_total"])
+            if parts_sum == composite:
+                stats["composite_cost_note"] = (
+                    "产品成本与快递费合计与综合成本一致（分项完整）")
+            else:
+                stats["composite_cost_note"] = (
+                    "综合成本含泡沫耗材等其它组成项，禁止与分项重复扣减")
+        else:
+            stats["composite_cost_note"] = (
+                "存在分项待核对订单，综合成本合计独立于分项展示")
         return stats
 
     def _merge_anomalies(self, calc_id, fresh):

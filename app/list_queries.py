@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from openpyxl import Workbook
 
+from .cost_validity import build_orders_lookup, is_effective_supplier_cost
 from .data_schemas import now_iso
 from .excel_export import append_row
 from .normalizer import money_str
@@ -53,8 +54,11 @@ class SupplierCostQueryService:
         if time_field not in SUPPLIER_TIME_FIELDS:
             time_field = "created_at"
         records = self.repo.read("supplier_costs")["records"]
+        orders_by_id = build_orders_lookup(self.repo.read("orders")["records"])
         rows = []
         for r in records:
+            if not is_effective_supplier_cost(r, orders_by_id):
+                continue
             if keyword:
                 kw = keyword.lower()
                 tracking = (r.get("tracking") or {}).get("tracking_number") or ""
@@ -165,6 +169,28 @@ ANOMALY_STATUS_LABELS = {
 ANOMALY_SEVERITY_LABELS = {"high": "高", "medium": "中", "low": "低"}
 
 
+def _anomaly_handler(r):
+    res = r.get("resolution")
+    if isinstance(res, dict):
+        return res.get("resolved_by") or res.get("operator") or None
+    return None
+
+
+def _enrich_anomaly(r):
+    """列表/导出统一结构化字段（不修改磁盘记录）。"""
+    handler = _anomaly_handler(r)
+    et = r.get("exception_type")
+    st = r.get("status")
+    out = dict(r)
+    out["exception_type_label"] = et or "—"
+    out["status_label"] = ANOMALY_STATUS_LABELS.get(st, st or "—")
+    out["severity_label"] = ANOMALY_SEVERITY_LABELS.get(
+        r.get("severity"), r.get("severity") or "—")
+    out["handler"] = handler
+    out["handler_label"] = handler or "—"
+    return out
+
+
 class AnomalyQueryService:
     """异常记录列表：时间字段为异常发现时间（created_at）"""
 
@@ -194,7 +220,7 @@ class AnomalyQueryService:
                     continue
             if not in_range(r.get("created_at"), start, end):
                 continue
-            rows.append(r)
+            rows.append(_enrich_anomaly(r))
         rows.sort(key=lambda r: ((r.get("created_at") or ""), r.get("record_id") or ""))
         rows.reverse()
 
@@ -233,7 +259,7 @@ class AnomalyQueryService:
             raise ValueError("当前筛选无数据可导出")
 
         headers = ["异常发现时间", "异常类型", "级别", "状态", "关联订单号",
-                   "异常信息", "处理结果", "导入批次", "对账批次"]
+                   "处理人", "异常信息", "处理结果", "导入批次", "对账批次"]
         wb = Workbook()
         ws = wb.active
         ws.title = "异常记录"
@@ -243,7 +269,8 @@ class AnomalyQueryService:
                 r.get("created_at"), r.get("exception_type"),
                 ANOMALY_SEVERITY_LABELS.get(r.get("severity"), r.get("severity")),
                 ANOMALY_STATUS_LABELS.get(r.get("status"), r.get("status")),
-                r.get("order_id") or "", r.get("message") or "",
+                r.get("order_id") or "", r.get("handler_label") or "",
+                r.get("message") or "",
                 (r.get("resolution") or {}).get("note") or ""
                 if isinstance(r.get("resolution"), dict) else (r.get("resolution") or ""),
                 r.get("batch_id") or "", r.get("reconciliation_id") or "",

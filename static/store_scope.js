@@ -37,6 +37,8 @@ class StoreScope {
     /* 店铺管理页物理删除店铺后派发 store-deleted: 清理当前选择并重载 */
     this._onStoreDeleted = e => this._handleStoreDeleted(e);
     window.addEventListener("store-deleted", this._onStoreDeleted);
+    this._onScopeRefresh = () => this._load().then(() => this.onChange());
+    window.addEventListener("store-scope-refresh", this._onScopeRefresh);
     this.ready = this._load();
   }
 

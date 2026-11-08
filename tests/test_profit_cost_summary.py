@@ -205,6 +205,10 @@ class TestProfitCostSummary(unittest.TestCase):
         self.assertEqual(stat["profit_total"], "174.45")
         self.assertEqual(stat["technical_service_fee"], "5.00")
         self.assertIsInstance(stat["technical_service_fee"], str)
+        self.assertIn("product_gross_profit_total", stat)
+        self.assertEqual(stat["product_gross_profit_total"], "164.95")
+        self.assertFalse(stat["cost_breakdown_complete"])
+        self.assertIn("分项待核对", stat["composite_cost_note"])
 
     # ---------- V2 / Q1 红线：综合成本 = 订单级 composite_cost 累加 ----------
     def test_02_composite_from_total_amount(self):
@@ -506,6 +510,19 @@ class TestProfitCostSummary(unittest.TestCase):
         self.assertEqual(rows[2][0], "合计")
         self.assertIn("产品成本待核对 1 单", rows[2][3])
 
+    def test_12b_analysis_payload(self):
+        """analysis / ad_expense 与 statistics 同筛选全量聚合"""
+        status, resp = self._get("/api/profit?size=20&page=2")
+        self.assertEqual(status, 200)
+        data = resp["data"]
+        self.assertIn("analysis", data)
+        a = data["analysis"]
+        self.assertIn("structure", a)
+        self.assertIn("monthly_trend", a)
+        self.assertGreaterEqual(len(a["product_ranking"]), 1)
+        self.assertIn("ad_expense", data)
+        self.assertIn("total", data["ad_expense"])
+
     # ---------- V9 前端侧 / 红线静态断言 ----------
     def test_12_frontend_static(self):
         """profit.html 含千位分隔函数与三卡；数值仅来自响应不前端累加"""
@@ -514,8 +531,10 @@ class TestProfitCostSummary(unittest.TestCase):
         with open(os.path.join(STATIC_DIR, "api.js"), encoding="utf-8") as f:
             api = f.read()
         self.assertIn("function fmtMoneyThousands", html)
-        for label in ("产品成本合计", "快递费合计", "综合成本合计"):
-            self.assertIn(f'"{label}"', html)
+        for label in ("产品成本合计", "快递费合计", "综合成本合计", "产品毛利"):
+            self.assertIn(label, html)
+        self.assertIn("chart-structure", html)
+        self.assertIn("btn-edit-ad", html)
         for field in COST_KEYS:
             self.assertIn(f"s.{field}", html)
         # renderStats 内不做前端金额累加（三卡数值仅来自响应 statistics）

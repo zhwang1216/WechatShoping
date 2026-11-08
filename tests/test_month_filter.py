@@ -396,6 +396,18 @@ class TestMonthFilter(unittest.TestCase):
         data = self._data("/api/import/batches?month=2026-05")
         self.assertEqual(data["total"], 1)
 
+    def test_summary_respects_month_filter(self):
+        data = self._data("/api/summary?month=2026-05")
+        self.assertGreaterEqual(data.get("order_count", 0), 1)
+        tr = data.get("time_range") or {}
+        self.assertEqual(tr.get("month"), "2026-05")
+
+    def test_monthly_profit_respects_month_filter(self):
+        data = self._data("/api/monthly-profit?month=2026-05")
+        self.assertIn("months", data)
+        months = {row["month"] for row in data["months"]}
+        self.assertTrue(all(m == "2026-05" for m in months) or len(months) == 0)
+
     def test_logs_month_filter_and_pagination(self):
         now = datetime.now()
         month = f"{now.year}-{now.month:02d}"

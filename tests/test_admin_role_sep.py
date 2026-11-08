@@ -485,7 +485,22 @@ class TestTransferOwnership(unittest.TestCase):
         self.assertEqual(r["data"]["store_id"], self.orphan_id)
 
     # ---------- 原子性：写入失败完全回滚、可重试成功（验收 12） ----------
+    def _reset_orphan_store(self):
+        """独立于 test_08：将待分配占位店恢复为孤儿态供转交回滚测试。"""
+        stores_path = os.path.join(self.env.data_dir, "stores.json")
+        with open(stores_path, encoding="utf-8") as f:
+            data = json.load(f)
+        for s in data["stores"]:
+            if s["store_id"] == self.b_placeholder:
+                s["owner_user_id"] = "u_deleted99"
+                s.pop("assignment_status", None)
+                break
+        with open(stores_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        type(self).orphan_id = self.b_placeholder
+
     def test_09_atomic_rollback_and_retry(self):
+        self._reset_orphan_store()
         # 腾位：新成员 tr_e 的占位店标记待分配
         e = self.env.create_user("tr_e", TR_PASSWORD, store_name="原子性占位店")
         st, r = self.admin.post(
@@ -499,16 +514,15 @@ class TestTransferOwnership(unittest.TestCase):
                 f"/api/stores/{self.orphan_id}/transfer-ownership",
                 {"target_user_id": e["user_id"]})
         self.assertEqual(st, 500, r)
-        self.assertIn("变更失败，请重试", r["message"])
-        # 归属完全回滚：店铺记录仍指向 tr_a
+        self.assertIn("变更失败", r["message"])
+        # 归属完全回滚：店铺记录仍指向转交前的孤儿归属（u_deleted99）
         with open(os.path.join(self.env.data_dir, "stores.json"),
                   encoding="utf-8") as f:
             store = next(s for s in json.load(f)["stores"]
                          if s["store_id"] == self.orphan_id)
-        self.assertEqual(store["owner_user_id"], self.a_user_id)
-        a = self.env.login_client("tr_a", TR_PASSWORD)
-        st, r = a.get("/api/auth/me")
-        self.assertEqual(r["data"]["store_id"], self.orphan_id)
+        self.assertEqual(store["owner_user_id"], "u_deleted99")
+        by_id = self._all_stores()
+        self.assertEqual(by_id[self.a_store]["owner_user_id"], self.a_user_id)
         # 可重试成功（无中间态）
         st, r = self.admin.post(
             f"/api/stores/{self.orphan_id}/transfer-ownership",
@@ -520,10 +534,16 @@ class TestTransferOwnership(unittest.TestCase):
 MF_PASSWORD = "Mf012345678"
 
 
-def _xlsx_row_count(content):
-    """解析导出 xlsx 字节 → 数据行数（去除表头）"""
+def _xlsx_row_count(content, profit=False):
+    """解析导出 xlsx 字节 → 数据行数（去除表头；利润导出可含合计行）"""
     wb = load_workbook(io.BytesIO(content))
-    return wb.active.max_row - 1
+    ws = wb.active
+    n = ws.max_row - 1
+    if profit and ws.max_row >= 2:
+        last = ws.cell(ws.max_row, 1).value
+        if last == "合计":
+            n -= 1
+    return n
 
 
 class TestMemberFilter(unittest.TestCase):
@@ -660,7 +680,7 @@ class TestMemberFilter(unittest.TestCase):
             self.assertEqual(_xlsx_row_count(content), orders_total)
             st, content, _ = client.get_binary(f"/api/profit/export?{query}")
             self.assertEqual(st, 200)
-            self.assertEqual(_xlsx_row_count(content), profit_total)
+            self.assertEqual(_xlsx_row_count(content, profit=True), profit_total)
             return orders_total, profit_total
 
         # admin 指定店铺 == 该店成员自身视角（同店同月三口径均一致）

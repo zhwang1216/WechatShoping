@@ -18,10 +18,10 @@
       }
       area.innerHTML = `
         <span class="who">
-          <span>${esc(me.username)}${whoName}</span>
+          <span class="who-user">${esc(me.username)}</span>
+          <span class="who-store">${whoName}</span>
           <span class="role-badge ${isAdmin ? "admin" : "member"}">${isAdmin ? "管理员" : "成员"}</span>
         </span>
-        ${isAdmin ? '<a class="auth-link" href="/users">用户管理</a>' : ""}
         <button class="auth-link" id="auth-change-pwd" type="button">修改密码</button>
         <button class="btn-logout" id="auth-logout" type="button">退出登录</button>`;
       document.getElementById("auth-logout").onclick = async () => {

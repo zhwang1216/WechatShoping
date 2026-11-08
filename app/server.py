@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import config, page_shell
 from .api_response import ApiResponse
+from .audit_log import export_logs_excel, structure_log_entry
 from .auth import (AuthError, LoginRateLimiter, SecurityLog, SessionStore,
                    UserManager, REGISTER_MAX_REQUESTS,
                    REGISTER_WINDOW_SECONDS, RegistrationRateLimiter)
@@ -47,6 +48,67 @@ UPLOAD_PATHS = {
 }
 
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+_SECRET_ASSIGN = re.compile(
+    r"(?i)(password_hash|password|token|cookie|secret)(\s*[:=]\s*)(\S+)")
+
+
+def _redact_log_text(text):
+    """日志中抹掉密码、令牌等赋值，保留异常类型与调用位置。"""
+    if not text:
+        return text
+    return _SECRET_ASSIGN.sub(r"\1\2***", text)
+
+
+def _exception_value_type(exc):
+    matched = re.match(r"'([A-Za-z_][A-Za-z0-9_]*)' object has no attribute", str(exc))
+    if matched:
+        return matched.group(1)
+    if isinstance(exc, AuthError):
+        return (exc.extra or {}).get("value_type")
+    return None
+
+
+def _exception_data_file(exc, traceback_text, source_line):
+    if isinstance(exc, AuthError):
+        named = (exc.extra or {}).get("data_file")
+        if named:
+            return named
+    blob = f"{traceback_text or ''}\n{source_line or ''}"
+    for name in ("sessions.json", "users.json", "stores.json",
+                 "settings.json", "permissions.json"):
+        if name in blob:
+            return name
+    if "SessionStore" in blob:
+        return "sessions.json"
+    if "normalize_collection_document" in blob or "UserManager" in blob:
+        return "users.json"
+    return None
+
+
+def _log_server_exception(security_log, request_path, exc):
+    """把未处理异常写入安全日志：接口、文件、函数、变量类型、数据文件、完整 traceback。"""
+    traceback.print_exc()
+    formatted = traceback.format_exc()
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    last = frames[-1] if frames else None
+    source = last.line if last and last.line else None
+    detail = {
+        "path": request_path,
+        "error": type(exc).__name__,
+        "message": _redact_log_text(str(exc)),
+        "file": os.path.basename(last.filename) if last else None,
+        "function": last.name if last else None,
+        "line": last.lineno if last else None,
+        "source": _redact_log_text(source) if source else None,
+        "value_type": _exception_value_type(exc),
+        "data_file": _exception_data_file(exc, formatted, source),
+        "traceback": _redact_log_text(formatted),
+    }
+    try:
+        security_log.append("api.error", detail=detail, result="error")
+    except Exception:
+        traceback.print_exc()
 
 # 无需登录即可访问的页面与 API
 PUBLIC_PAGES = {"/login", "/register", "/setup"}
@@ -568,6 +630,8 @@ class ReconcileServer:
         if not scope.multi:
             try:
                 filename, content = export_fn(scope.bundle)
+            except ProfitServiceError:
+                raise
             except ValueError as e:
                 raise ApiError(str(e), code=400, http_status=400)
             return handler._send_bytes(EXCEL_MIME, content, filename)
@@ -951,6 +1015,8 @@ class ReconcileServer:
                     self._send(ApiResponse.error(str(e), code=e.code, data=e.data),
                                e.http_status)
                 except AuthError as e:
+                    if e.http_status >= 500:
+                        _log_server_exception(app.security_log, self.path, e)
                     self._send(ApiResponse.error(str(e), code=e.code,
                                                  data=e.extra or None),
                                e.http_status)
@@ -964,16 +1030,10 @@ class ReconcileServer:
                 except json.JSONDecodeError:
                     self._send(ApiResponse.error("请求体不是合法的 JSON", code=400), 400)
                 except Exception as e:
-                    # 完整 traceback 仅落服务端日志（stderr 经 start.sh
-                    # 重定向至 logs/server.out），便于检索报错文件与行号；
-                    # 响应体保持简短消息，不外泄堆栈与磁盘路径。
-                    traceback.print_exc()
-                    app.security_log.append(
-                        "api.error",
-                        detail={"path": self.path, "error": repr(e)},
-                        result="error",
-                    )
-                    self._send(ApiResponse.error(f"服务器内部错误: {e}", code=500), 500)
+                    # 完整 traceback、出错位置与变量类型只进服务端日志；
+                    # 响应体保持简短消息，不外泄堆栈、磁盘路径和密码。
+                    _log_server_exception(app.security_log, self.path, e)
+                    self._send(ApiResponse.error("服务器内部错误", code=500), 500)
 
             def _read_body(self):
                 length = int(self.headers.get("Content-Length") or 0)
@@ -1132,6 +1192,8 @@ class ReconcileServer:
             return self._handle_get_data(handler, parsed, m.group(1), bundle)
         if path == "/api/logs":
             return self._handle_logs(handler, parsed, bundle)
+        if path == "/api/logs/export":
+            return self._handle_logs_export(handler, parsed, bundle)
         if path == "/api/backups":
             return self._handle_list_backups(handler, parsed, bundle)
         if path == "/api/orders":
@@ -3044,7 +3106,9 @@ class ReconcileServer:
         filters = self._profit_filters(parse_qs(parsed.query))
 
         def data_fn(b, _sid, _sname, page, size):
-            return b.profits.list_results(page=page, size=size, **filters)
+            return b.profits.list_results(
+                page=page, size=size, store_id=_sid, store_name=_sname,
+                **filters)
 
         self._scoped_list(handler, parsed, data_fn, "results")
 
@@ -4622,74 +4686,82 @@ class ReconcileServer:
         )
         handler._send(ApiResponse.ok(data, message="恢复成功"))
 
-    def _handle_logs(self, handler, parsed, bundle):
-        qs = parse_qs(parsed.query)
+    def _collect_log_entries(self, scope, qs, limit=None):
         action = qs.get("action", [None])[0]
         operator = qs.get("operator", [None])[0]
         keyword = qs.get("keyword", [None])[0] or None
         start, end = self._time_filter(qs)
-        scope = self._query_scope(handler, parsed)
 
-        def query_all(b, sid, sname, limit=None):
-            entries = b.op_log.query(
+        def query_store(b, sid, sname):
+            raw = b.op_log.query(
                 limit=limit, action=action, operator=operator,
                 start=start, end=end, keyword=keyword)
-            out = []
-            for e in entries:
-                if isinstance(e, dict):
-                    # operator 归一化已下沉到读取层（op_log.query 逐行
-                    # 归一化，先于筛选），此处仅补充店铺归属并复制条目，
-                    # 防止上层修改 query 返回对象。
-                    e = dict(e)
-                    e.setdefault("store_id", sid)
-                    e.setdefault("store_name", sname)
-                out.append(e)
-            return out
+            return [structure_log_entry(dict(e), sid, sname)
+                    for e in raw if isinstance(e, dict)]
 
-        if any(k in qs for k in ("page", "page_size", "size")):
-            page, size = self._page_params(qs)
-            if not scope.multi:
-                entries = query_all(scope.bundle, scope.store_id,
-                                    scope.store_name)
-            else:
-                entries = []
-                for b, sid, sname in scope.targets:
-                    entries.extend(query_all(b, sid, sname))
-                entries.sort(key=lambda e: (e.get("time") or ""), reverse=True)
-            total = len(entries)
-            operators = {e.get("operator") for e in entries if e.get("operator")}
-            errors = sum(1 for e in entries if e.get("result") == "error")
-            handler._send(ApiResponse.ok({
-                "total": total, "page": page, "size": size,
-                "pages": (total + size - 1) // size,
-                "entries": entries[(page - 1) * size:page * size],
-                "statistics": {
-                    "entry_count": total,
-                    "operator_count": len(operators),
-                    "error_count": errors,
-                    "time_field": "time",
-                },
-                "time_range": self._time_meta(qs),
-                **({"store_scope": "all", "store_count": len(scope.targets)}
-                   if scope.multi else {}),
-            }))
-            return
-        # 兼容旧 limit 模式（无分页参数）
-        try:
-            limit = int(qs.get("limit", ["100"])[0] or 100)
-        except ValueError:
-            raise ApiError("limit 必须是整数", code=400, http_status=400)
-        limit = max(0, min(limit, config.LOG_QUERY_MAX))
         if not scope.multi:
-            entries = query_all(scope.bundle, scope.store_id, scope.store_name,
-                                limit=limit)
-        else:
-            entries = []
-            for b, sid, sname in scope.targets:
-                entries.extend(query_all(b, sid, sname, limit=limit))
-            entries.sort(key=lambda e: (e.get("time") or ""), reverse=True)
+            return query_store(scope.bundle, scope.store_id, scope.store_name)
+        entries = []
+        for b, sid, sname in scope.targets:
+            entries.extend(query_store(b, sid, sname))
+        entries.sort(key=lambda e: (e.get("time") or ""), reverse=True)
+        if limit is not None:
             entries = entries[:limit]
-        handler._send(ApiResponse.ok({"total": len(entries), "entries": entries}))
+        return entries
+
+    def _handle_logs(self, handler, parsed, bundle):
+        qs = parse_qs(parsed.query)
+        scope = self._query_scope(handler, parsed)
+        try:
+            if any(k in qs for k in ("page", "page_size", "size")):
+                page, size = self._page_params(qs)
+                entries = self._collect_log_entries(scope, qs)
+                total = len(entries)
+                operators = {e.get("operator") for e in entries
+                               if e.get("operator")}
+                errors = sum(1 for e in entries if e.get("result") == "error")
+                handler._send(ApiResponse.ok({
+                    "total": total, "page": page, "size": size,
+                    "pages": max(1, (total + size - 1) // size),
+                    "entries": entries[(page - 1) * size:page * size],
+                    "statistics": {
+                        "entry_count": total,
+                        "operator_count": len(operators),
+                        "error_count": errors,
+                        "time_field": "time",
+                    },
+                    "time_range": self._time_meta(qs),
+                    **({"store_scope": "all",
+                        "store_count": len(scope.targets)}
+                       if scope.multi else {}),
+                }))
+                return
+            try:
+                limit = int(qs.get("limit", ["100"])[0] or 100)
+            except ValueError:
+                raise ApiError("limit 必须是整数", code=400, http_status=400)
+            limit = max(0, min(limit, config.LOG_QUERY_MAX))
+            entries = self._collect_log_entries(scope, qs, limit=limit)
+            handler._send(ApiResponse.ok({
+                "total": len(entries), "entries": entries}))
+        except TimeRangeError as e:
+            raise ApiError(f"时间筛选参数错误: {e}", code=400, http_status=400)
+
+    def _handle_logs_export(self, handler, parsed, bundle):
+        qs = parse_qs(parsed.query)
+        scope = self._query_scope(handler, parsed)
+        operator = self._operator(handler)
+        try:
+            entries = self._collect_log_entries(scope, qs)
+            filename, content = export_logs_excel(
+                entries, operator=operator or "admin")
+        except ValueError as e:
+            raise ApiError(str(e), code=400, http_status=400)
+        except TimeRangeError as e:
+            raise ApiError(f"时间筛选参数错误: {e}", code=400, http_status=400)
+        handler._send_bytes(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            content, filename)
 
     def _handle_list_backups(self, handler, parsed, bundle):
         qs = parse_qs(parsed.query)

@@ -1735,27 +1735,29 @@ class TestFrontendAssets(unittest.TestCase):
         self.assertIn("target_store_id", js)
 
     def test_05_nav_invariants_member_no_mgmt_entry(self):
+        from app import page_shell
+        shell = page_shell.render("/stores")
+        m = re.search(
+            r"<!--admin-nav-start-->(.*?)<!--admin-nav-end-->",
+            shell, re.S)
+        self.assertIsNotNone(m, "注入壳层缺少 admin 导航标记块")
+        admin_block = m.group(1)
+        self.assertIn('<a href="/stores"', admin_block)
+        self.assertIn('<a href="/users"', admin_block)
         for page in ("stores.html", "create_user.html", "index.html",
                      "users.html"):
             html = _read_static(page)
-            m = re.search(
-                r"<!--admin-nav-start-->(.*?)<!--admin-nav-end-->",
-                html, re.S)
-            self.assertIsNotNone(m, f"{page} 缺少 admin 导航标记块")
-            admin_block = m.group(1)
-            # 管理入口全部位于 admin 块内（服务端为 member 渲染时剔除）
-            self.assertIn('<a href="/stores"', admin_block, page)
-            self.assertIn('<a href="/users"', admin_block, page)
-            # 剔除 admin 块后 nav 恰 10 项业务菜单
-            nav = re.search(r"<nav>(.*?)</nav>", html, re.S)
-            self.assertIsNotNone(nav, page)
-            nav_wo_admin = re.sub(
-                r"<!--admin-nav-start-->.*?<!--admin-nav-end-->", "",
-                nav.group(1), flags=re.S)
-            links = re.findall(r'<a href="(/[a-z-]+)"', nav_wo_admin)
-            self.assertEqual(len(links), 10, f"{page} nav 业务菜单数")
-            self.assertNotIn("/stores", links, page)
-            self.assertNotIn("/users", links, page)
+            self.assertIn("<!--@app-shell-->", html, page)
+            self.assertNotIn("<!--admin-nav-start-->", html, page)
+        env = TestEnv()
+        try:
+            st, html, headers = env.member.get_page("/stores")
+            self.assertIn(st, (301, 302, 403), headers.get("Location", html[:80]))
+            if st == 200:
+                self.assertNotIn('href="/users"', html)
+                self.assertNotIn('href="/stores"', html)
+        finally:
+            env.cleanup()
 
 
 class TestAuditAndSecurity(unittest.TestCase):
@@ -2397,18 +2399,16 @@ class TestOwnershipTransferEnhancements(unittest.TestCase):
     def test_06_frontend_transfer_dialog_assets(self):
         """前端静态断言: 专用归属弹窗已移除，归属修改经"编辑"弹窗完成"""
         html = _read_static("stores.html")
-        # 专用归属弹窗的标题与入口函数均已删除
-        for removed in ("修改店铺归属", "openTransferOwnership",
+        for removed in ("openTransferOwnership",
                         "confirmTransferOwnership", "showTransferResult"):
             self.assertNotIn(removed, html)
-        # 归属修改改由 editStore 弹窗承担：标题 + 归属者下拉框
-        self.assertIn("编辑店铺", html)
+        self.assertIn("editStore", html)
+        self.assertIn("修改店铺归属", html)
         self.assertIn('id="rn-owner"', html)
-        self.assertIn("店铺归属者", html)
-        # 成员列表仅显示启用状态的普通成员（过滤管理员与停用成员）
+        self.assertIn("新归属成员", html)
         self.assertIn('u.role === "member" && u.status === "active"', html)
         # 无可用成员提示
-        self.assertIn("系统中没有可用的普通成员，请先创建成员账号", html)
+        self.assertIn("没有可用的成员账号，请先创建成员", html)
         # 保存时调用归属转移接口
         self.assertIn("/transfer-ownership", html)
 

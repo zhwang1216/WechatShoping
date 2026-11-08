@@ -8,15 +8,21 @@
 </head>
 <body>
 <!--@app-shell-->
-  <div class="page-title">异常记录处理</div>
-  <div class="page-desc">集中展示导入校验异常、对账异常（未匹配订单/金额差异/数量差异等）与利润风险。月份筛选按异常发现时间（记录生成时间）归属（左闭右开区间）；异常的解决请在对应业务页面操作（对账成本/利润核算），重跑后会自动关闭已修复的异常。</div>
+  <div class="admin-page-head">
+    <div class="page-title">异常处理</div>
+    <div class="page-desc">列表查看、抽屉详情。按异常发现时间筛选；处理请在对应业务页（对账/利润）完成，重算后自动关闭已修复项。</div>
+  </div>
 
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
+  <div class="card">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+  </div>
 
   <div class="stat-grid" id="stat-grid"></div>
 
-  <div class="card">
+  <div class="card admin-filter-card">
     <div class="filter-grid">
       <div class="filter-item"><label>关键词</label><input id="f-keyword" placeholder="异常信息/订单号/类型"></div>
       <div class="filter-item"><label>处理状态</label>
@@ -28,7 +34,7 @@
       <div class="filter-item"><label>级别</label>
         <select id="f-severity"><option value="">全部</option></select>
       </div>
-      <div class="filter-item"><label>订单号（精确）</label><input id="f-order-id" placeholder="输入完整订单号"></div>
+      <div class="filter-item"><label>订单号（精确）</label><input id="f-order-id" placeholder="完整订单号"></div>
       <div class="filter-actions">
         <button class="btn" id="btn-query">查询</button>
         <button class="btn secondary" id="btn-reset">重置</button>
@@ -37,20 +43,15 @@
   </div>
 
   <div class="card table-card">
-    <div class="card-head"><h3 style="margin:0">异常记录列表</h3>
+    <div class="card-head admin-toolbar">
+      <h3 style="margin:0">异常列表</h3>
       <div class="head-actions">
         <span class="hint" id="table-hint"></span>
         <button class="btn secondary" id="btn-export">导出当前筛选</button>
       </div>
     </div>
     <div class="table-wrap">
-      <table id="anomaly-table">
-        <thead><tr>
-          <th>发现时间</th><th>异常类型</th><th>级别</th><th>状态</th>
-          <th>关联订单</th><th>异常信息</th><th>处理结果</th><th>批次</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
+      <table id="anomaly-table"><thead></thead><tbody></tbody></table>
     </div>
     <div id="table-state"></div>
     <div class="pager" id="pager"></div>
@@ -59,7 +60,10 @@
 
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/filter_system.js"></script>
+<script src="/static/modal.js"></script>
 <script src="/static/common_table.js"></script>
+<script src="/static/data_table.js"></script>
 <script src="/static/list_page.js"></script>
 <script src="/static/auth_nav.js"></script>
 <script src="/static/sidebar.js"></script>
@@ -73,13 +77,55 @@ function sevBadge(s) {
   const [label, color] = SEVERITY_META[s] || [s || "—", "gray"];
   return `<span class="badge ${color}">${esc(label)}</span>`;
 }
-function stBadge(s) {
-  const [label, color] = STATUS_META[s] || [s || "—", "gray"];
-  return `<span class="badge ${color}">${esc(label)}</span>`;
+function stBadge(s, label) {
+  const meta = STATUS_META[s];
+  const text = label || (meta ? meta[0] : (s || "—"));
+  const color = meta ? meta[1] : "gray";
+  return `<span class="badge ${color}">${esc(text)}</span>`;
+}
+
+let anomalyRows = [];
+
+function openAnomalyDrawer(a) {
+  const res = a.resolution;
+  const resNote = typeof res === "object"
+    ? (res.note || res.text || "—")
+    : (res || "—");
+  const links = [];
+  if (a.order_id) links.push(`<a href="/orders?order_id=${encodeURIComponent(a.order_id)}">普通订单</a>`);
+  if (a.order_id) links.push(`<a href="/reconciliation?order_id=${encodeURIComponent(a.order_id)}">对账成本</a>`);
+  if (a.order_id) links.push(`<a href="/profit?order_id=${encodeURIComponent(a.order_id)}">利润核算</a>`);
+  const html = `
+    <div class="detail-section"><h4>概要</h4>
+      <div class="kv-grid">
+        <div class="kv"><div class="k">异常类型</div><div class="v">${esc(a.exception_type_label || a.exception_type)}</div></div>
+        <div class="kv"><div class="k">处理状态</div><div class="v">${stBadge(a.status, a.status_label)} ${sevBadge(a.severity)}</div></div>
+        <div class="kv"><div class="k">发生时间</div><div class="v">${esc(fmtTime(a.created_at))}</div></div>
+        <div class="kv"><div class="k">所属店铺</div><div class="v">${esc(a.store_name || "—")}<br><span style="font-size:11px;font-family:monospace;color:var(--text-light)">${esc(a.store_id || "")}</span></div></div>
+        <div class="kv"><div class="k">关联订单</div><div class="v">${esc(a.order_id || "—")}</div></div>
+        <div class="kv"><div class="k">处理人</div><div class="v">${esc(a.handler_label || a.handler || "—")}</div></div>
+      </div>
+    </div>
+    <div class="detail-section"><h4>异常信息</h4>
+      <div class="formula-box">${esc(a.message || "—")}</div>
+    </div>
+    <div class="detail-section"><h4>处理结果</h4>
+      <div class="formula-box">${esc(resNote)}</div>
+    </div>
+    <div class="detail-section"><h4>追溯</h4>
+      <div class="kv-grid">
+        <div class="kv"><div class="k">记录 ID</div><div class="v" style="font-family:monospace;font-size:12px">${esc(a.record_id)}</div></div>
+        <div class="kv"><div class="k">导入批次</div><div class="v">${esc(a.batch_id || "—")}</div></div>
+        <div class="kv"><div class="k">对账批次</div><div class="v">${esc(a.reconciliation_id || "—")}</div></div>
+      </div>
+    </div>
+    ${links.length ? `<p style="font-size:12px;margin-top:12px">快捷跳转：${links.join(" · ")}</p>` : ""}`;
+  openDrawer({ title: "异常详情", width: 520, bodyHtml: html });
 }
 
 const ANOMALY_PAGE = new ListPage({
   tableId: "anomaly-table",
+  useDataTable: true,
   url: "/api/anomalies",
   itemsKey: "anomalies",
   rowKey: "record_id",
@@ -94,34 +140,40 @@ const ANOMALY_PAGE = new ListPage({
     { id: "f-order-id", param: "order_id" },
   ],
   columns: [
-    { title: "发现时间", render: a => fmtTime(a.created_at) },
-    { title: "异常类型", render: a => `<span class="badge gray">${esc(a.exception_type)}</span>` },
-    { title: "级别", render: a => sevBadge(a.severity) },
-    { title: "状态", render: a => stBadge(a.status) },
-    { title: "关联订单", render: a => a.order_id ? esc(a.order_id) : "—" },
-    { title: "异常信息", render: a => {
-      const msg = a.message || "—";
-      return `<span style="display:block;max-width:320px;white-space:normal" title="${esc(msg)}">${esc(msg)}</span>`;
-    } },
-    { title: "处理结果", render: a => {
-      const res = a.resolution || {};
-      const text = typeof res === "object" ? (res.note || res.status || "—") : String(res || "—");
-      return `<span style="display:block;max-width:180px;white-space:normal;font-size:12px">${esc(text)}</span>`;
-    } },
-    { title: "批次", render: a => {
-      const key = a.batch_id || a.reconciliation_id || "—";
-      return `<span style="font-size:12px" title="${esc(a.batch_id || "")}${a.reconciliation_id ? " / " + esc(a.reconciliation_id) : ""}">${esc(String(key).slice(0, 12))}…</span>`;
-    } },
+    { key: "created_at", title: "发生时间", type: "datetime", sortable: "created_at",
+      render: a => fmtTime(a.created_at) },
+    { key: "exception_type", title: "异常类型", type: "status",
+      render: a => `<span class="badge gray">${esc(a.exception_type_label || a.exception_type)}</span>` },
+    { key: "status", title: "处理状态", render: a => stBadge(a.status, a.status_label) },
+    { key: "store_name", title: "所属店铺", ellipsis: true,
+      render: a => esc(a.store_name || "—") },
+    { key: "order_id", title: "关联订单", type: "orderId",
+      render: a => a.order_id ? DataTable.format.orderId(a.order_id) : "—" },
+    { key: "handler", title: "处理人",
+      render: a => esc(a.handler_label || "—") },
+    { key: "op", title: "", className: "col-op",
+      render: (a, i) => `<button class="link-btn" type="button" data-anomaly-idx="${i}">详情</button>` },
   ],
   stats: s => s ? renderStatCards(null, [
     ["异常总数", s.anomaly_count, ""],
     ["待处理", s.pending_count, s.pending_count ? "danger" : "success"],
     ["已解决", s.resolved_count, "success"],
-    ["高危异常", s.high_severity_count, s.high_severity_count ? "warn" : ""],
-  ], "时间口径：异常发现时间（记录生成时间 created_at）。") : "",
+    ["高危", s.high_severity_count, s.high_severity_count ? "warn" : ""],
+  ], "时间口径：异常发现时间 created_at（左闭右开）。") : "",
   emptyHtml: mf =>
-    `<div class="empty-state"><div class="icon">✅</div>当前筛选（${esc(mf.getLabel())}）内没有异常记录<br>
-     <span style="font-size:12px">可切换月份或选择「全部」查看历史异常</span></div>`,
+    `<div class="empty-state"><div class="icon">✅</div>当前筛选（${esc(mf.getLabel())}）无异常<br>
+     <span style="font-size:12px">可切换月份或选择「全部」</span></div>`,
+  onData: r => {
+    anomalyRows = r.data || [];
+    const table = document.getElementById("anomaly-table");
+    if (!table) return;
+    table.querySelectorAll("[data-anomaly-idx]").forEach(btn => {
+      btn.onclick = () => {
+        const i = Number(btn.getAttribute("data-anomaly-idx"));
+        if (anomalyRows[i]) openAnomalyDrawer(anomalyRows[i]);
+      };
+    });
+  },
 });
 
 async function loadOptions() {
@@ -136,7 +188,9 @@ async function loadOptions() {
       .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
     sv.innerHTML += Object.entries(options.severity)
       .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  } catch (e) { /* 选项加载失败不阻塞列表 */ }
+  } catch (e) {
+    toast(e.message || "加载筛选项失败", "error");
+  }
 }
 
 loadOptions().then(() => ANOMALY_PAGE.reload());

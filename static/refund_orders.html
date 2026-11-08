@@ -8,11 +8,19 @@
 </head>
 <body>
 <!--@app-shell-->
+  <nav class="page-subnav" aria-label="退款模块">
+    <a href="/refund-orders" class="current" aria-current="page">退款订单</a>
+    <span class="page-subnav-tab muted" title="在列表中点击「详情」可查看逐笔退款明细">退款明细（详情）</span>
+  </nav>
   <div class="page-title">退款订单</div>
   <div class="page-desc">展示所有存在退款记录的订单（同一原订单仅一行汇总，多笔退款在详情逐笔展示）。月份筛选默认按退款申请时间归属；退款申请时间缺失时回退下单时间（跨月退款不漏记），成功退款金额另按退款成功时间单独统计。</div>
 
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
+  <div class="card">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+  </div>
 
   <div class="stat-grid" id="stat-grid"></div>
 
@@ -65,16 +73,7 @@
       </div>
     </div>
     <div class="table-wrap">
-      <table id="refund-table">
-        <thead><tr>
-          <th>订单号</th><th>下单时间</th><th>退款申请时间</th><th>订单状态</th><th>退款状态</th>
-          <th class="num">退款总额</th><th class="num">成功金额</th>
-          <th class="num">处理中金额</th><th class="num">关闭金额</th>
-          <th class="num">笔数</th><th>粒度</th><th>状态来源</th>
-          <th class="num">实收金额</th><th>待核对</th><th class="col-op">操作</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
+      <table id="refund-table"><thead></thead><tbody></tbody></table>
     </div>
     <div id="table-state"></div>
     <div class="pager" id="pager"></div>
@@ -83,7 +82,9 @@
 
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/filter_system.js"></script>
 <script src="/static/common_table.js"></script>
+<script src="/static/data_table.js"></script>
 <script src="/static/list_page.js"></script>
 <script src="/static/modal.js"></script>
 <script src="/static/order_detail.js"></script>
@@ -100,6 +101,8 @@ const TIME_FIELD_LABEL = {
 
 const REFUND_PAGE = new ListPage({
   tableId: "refund-table",
+  useDataTable: true,
+  sortFilterIds: { field: "f-order-by", dir: "f-order-dir" },
   url: "/api/refund-orders",
   itemsKey: "orders",
   rowKey: "order_id",
@@ -117,33 +120,41 @@ const REFUND_PAGE = new ListPage({
     { id: "f-order-dir", param: "order_dir", always: true, reset: "desc" },
   ],
   columns: [
-    { title: "订单号", render: r => esc(r.order_id) },
-    { title: "下单时间", render: r => fmtTime(r.order_time) },
-    { title: "退款申请时间", render: r => {
+    { key: "order_id", title: "订单号", type: "orderId", sortable: "order_id", minWidth: 160 },
+    { key: "order_time", title: "下单时间", type: "datetime", sortable: "order_time",
+      render: r => fmtTime(r.order_time) },
+    { key: "refund_apply_time", title: "退款申请时间", type: "datetime", render: r => {
       const rf = r.refund || {};
       const applyT = rf.refund_apply_time;
       const fallback = rf.refund_apply_time_source === "order_time_fallback";
       if (!applyT) return "—";
       return fallback
-        ? `<span title="退款申请时间缺失，已回退下单时间" style="color:var(--warning)">${fmtTime(applyT)} ⚠</span>`
+        ? `<span class="amount amount--warning" title="退款申请时间缺失，已回退下单时间">${fmtTime(applyT)} ⚠</span>`
         : fmtTime(applyT);
     } },
-    { title: "订单状态", render: r => orderStatusBadge(r.order_status) },
-    { title: "退款状态", render: r => refundStatusBadge((r.refund || {}).refund_status) },
-    { title: "退款总额", align: "right", render: r => `<b>${fmtMoney((r.refund || {}).refund_amount)}</b>` },
-    { title: "成功金额", align: "right", render: r =>
-      `<span style="color:var(--success)">${fmtMoney((r.refund_by_status || {}).success)}</span>` },
-    { title: "处理中金额", align: "right", render: r =>
-      `<span style="color:var(--warning)">${fmtMoney((r.refund_by_status || {}).pending)}</span>` },
-    { title: "关闭金额", align: "right", render: r =>
-      `<span style="color:var(--text-light)">${fmtMoney((r.refund_by_status || {}).closed)}</span>` },
-    { title: "笔数", align: "right", render: r => (r.refund || {}).refund_count },
-    { title: "粒度", render: r => (r.refund || {}).refund_amount_granularity === "unknown"
+    { key: "order_status", title: "订单状态", type: "status",
+      render: r => orderStatusBadge(r.order_status) },
+    { key: "refund_status", title: "退款状态", type: "status",
+      render: r => refundStatusBadge((r.refund || {}).refund_status) },
+    { key: "refund_amount", title: "退款总额", type: "amount", sortable: "refund_amount",
+      render: r => DataTable.format.amount((r.refund || {}).refund_amount, "danger") },
+    { key: "success_amt", title: "成功金额", type: "amount",
+      render: r => DataTable.format.amount((r.refund_by_status || {}).success, "success") },
+    { key: "pending_amt", title: "处理中金额", type: "amount",
+      render: r => DataTable.format.amount((r.refund_by_status || {}).pending, "warning") },
+    { key: "closed_amt", title: "关闭金额", type: "amount",
+      render: r => DataTable.format.amount((r.refund_by_status || {}).closed, "muted") },
+    { key: "refund_count", title: "笔数", align: "right",
+      render: r => (r.refund || {}).refund_count },
+    { key: "granularity", title: "粒度", render: r => (r.refund || {}).refund_amount_granularity === "unknown"
       ? '<span class="badge orange">粒度待核对</span>' : '<span class="badge gray">商品行级</span>' },
-    { title: "状态来源", render: r => statusSourceBadge((r.refund || {}).status_source) },
-    { title: "实收金额", align: "right", render: r => fmtMoney(r.amounts.actual_received_amount) },
-    { title: "待核对", render: r => r.pending_review ? '<span class="badge red">待核对</span>' : "—" },
-    { title: "操作", fixed: true, render: r =>
+    { key: "status_source", title: "状态来源",
+      render: r => statusSourceBadge((r.refund || {}).status_source) },
+    { key: "actual_received", title: "实收金额", type: "amount", sortable: "actual_received_amount",
+      render: r => DataTable.format.amount(r.amounts.actual_received_amount) },
+    { key: "pending_review", title: "待核对",
+      render: r => r.pending_review ? '<span class="badge red">待核对</span>' : "—" },
+    { key: "_op", title: "操作", fixed: "right", render: r =>
       `<button class="link-btn" type="button" data-detail="${esc(r.order_id)}">详情</button>` },
   ],
   stats: s => {

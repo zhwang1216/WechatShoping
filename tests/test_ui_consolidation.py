@@ -47,6 +47,11 @@ class TestUIConsolidation(unittest.TestCase):
         self.assertIn("function ListPage", self._static("list_page.js"))
         self.assertIn("function openOrderDetail", self._static("order_detail.js"))
         self.assertIn("function openDrawer", self._static("modal.js"))
+        style = self._static("style.css")
+        self.assertIn("responsive.css", style)
+        resp = self._static("responsive.css")
+        self.assertIn("overflow-x: clip", resp)
+        self.assertIn("modal-drawer", resp)
 
     def test_02_list_pages_use_shared_components(self):
         for path in LIST_PAGES:

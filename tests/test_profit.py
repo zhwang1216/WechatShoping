@@ -215,11 +215,12 @@ class TestProfit(unittest.TestCase):
     # ---------- 未知口径：基础利润公式 + 状态机 ----------
     def test_02_unknown_caliber_and_basic_profit(self):
         """unknown 口径：贡献利润=净收入+计入补贴−总金额−技术费；口径未确认/缺数据的状态"""
+        self._run_recon()
         data = self._recalc()
 
         # 核算元数据：规则版本 / 批次 / 时间
         self.assertTrue(data["calculation_id"].startswith("calc_"))
-        self.assertEqual(data["rules_version"], "P1.2")
+        self.assertEqual(data["rules_version"], "P1.3")
         self.assertTrue(data["calculated_at"])
         self.assertEqual(data["policies"], {
             "refund_deduction_status": "unknown",
@@ -227,13 +228,13 @@ class TestProfit(unittest.TestCase):
         self.assertEqual(len(data["source_batch_ids"]["wechat_orders"]), 1)
         self.assertEqual(len(data["source_batch_ids"]["supplier_costs"]), 1)
 
-        # 统计：calculated=1 pending=3 not_calculable=2 needs_review=1
-        # profit_total 仅含 calculated/needs_review：49 + 60 = 109.00
+        # 统计：P1001 calculated；P1004/P1006 not_calculable；
+        # profit_total 含 calculated + needs_review（P1007 60）
         self.assertEqual(self._stats_of(data), {
             "total": 7, "calculated": 1, "pending_confirmation": 3,
             "not_calculable": 2, "needs_review": 1, "profit_total": "109.00"})
-        # 新增异常：退款口径未确认×2 + 负利润×1
-        self.assertEqual(data["anomalies_created"], 3)
+        # 利润类异常已由对账/自动核算写入；本次重算不再新增
+        self.assertEqual(data["anomalies_created"], 0)
         self.assertEqual(data["anomalies_auto_resolved"], 0)
 
         # P1001：利润 49.00 = 100 + 0 − 48 − 3（成本/物流分项不重复扣减）
@@ -355,7 +356,7 @@ class TestProfit(unittest.TestCase):
                          "not_deducted")
         self.assertEqual(resp["data"]["policies"]["platform_subsidy_included"],
                          "unknown")
-        self.assertEqual(resp["data"]["rules_version"], "P1.2")
+        self.assertEqual(resp["data"]["rules_version"], "P1.3")
         self.assertTrue(resp["data"]["declaration"])
 
         # options 反映新口径
@@ -364,7 +365,7 @@ class TestProfit(unittest.TestCase):
         cfg = resp["data"]["config"]
         self.assertEqual(cfg["policies"]["refund_deduction_status"], "not_deducted")
         self.assertIn("未扣除", cfg["labels"]["refund_deduction_status"])
-        self.assertEqual(resp["data"]["rules_version"], "P1.2")
+        self.assertEqual(resp["data"]["rules_version"], "P1.3")
         # 枚举选项完整
         self.assertEqual(set(resp["data"]["refund_deduction_status"]),
                          {"unknown", "not_deducted", "deducted"})
@@ -487,7 +488,7 @@ class TestProfit(unittest.TestCase):
         # P1005 重复成本、P1006 成本缺失）+ 利润类 1（P1003 负利润）
         self.assertEqual(s["open_anomaly_count"], 5)
         self.assertTrue(s["has_calculation"])
-        self.assertEqual(s["latest_calculation"]["rules_version"], "P1.2")
+        self.assertEqual(s["latest_calculation"]["rules_version"], "P1.3")
         self.assertEqual(s["latest_calculation"]["calculation_id"],
                          self.latest_calc_id)
         self.assertEqual(s["policies"], {
@@ -619,7 +620,7 @@ class TestProfit(unittest.TestCase):
 
         # 订单明细含 trace：微信批次 + 供应商批次 + 规则版本
         r = self._profit_of("P1001")
-        self.assertEqual(r["rules_version"], "P1.2")
+        self.assertEqual(r["rules_version"], "P1.3")
         self.assertEqual(r["calculation_id"], new_calc_id)
         self.assertTrue(r["created_at"])
         self.assertEqual(len(r["trace"]["batch_ids"]["wechat_orders"]), 1)
@@ -627,18 +628,18 @@ class TestProfit(unittest.TestCase):
         self.assertEqual(len(r["trace"]["order_record_ids"]), 1)
         self.assertEqual(len(r["trace"]["supplier_record_ids"]), 1)
 
-        # 历史版本保留：核算运行记录数 = 累计 recalculate 次数（7 次）
+        # 历史版本保留：显式 recalculate 7 次 + test_01/test_09 对账触发自动核算 2 次
         status, resp = self._get("/api/data/profit_statements")
         self.assertEqual(status, 200)
         records = resp["data"]["records"]
         runs = [x for x in records if x.get("record_type") == "calculation_run"]
-        self.assertEqual(len(runs), 7)
+        self.assertEqual(len(runs), 9)
         calc_ids = {x["record_id"] for x in runs}
-        self.assertEqual(len(calc_ids), 7)
+        self.assertEqual(len(calc_ids), 9)
         self.assertIn(self.first_calc_id, calc_ids)
         # 运行记录含规则版本、口径与数据批次
         first_run = next(x for x in runs if x["record_id"] == self.first_calc_id)
-        self.assertEqual(first_run["rules_version"], "P1.2")
+        self.assertEqual(first_run["rules_version"], "P1.3")
         self.assertEqual(first_run["policies"]["refund_deduction_status"],
                          "unknown")
 
@@ -681,11 +682,14 @@ class TestProfit(unittest.TestCase):
         self.assertEqual({rows[i][0] for i in range(1, 8)},
                          {"P1001", "P1002", "P1003", "P1004",
                           "P1005", "P1006", "P1007"})
-        # P1001 行：实收 100 / 利润 49 / 利润率 49.00%
+        hdr = rows[0]
+        idx_recv = hdr.index("实际收款金额")
+        idx_profit = hdr.index("经营贡献利润")
+        idx_margin = hdr.index("利润率")
         p1 = next(r for r in rows[1:] if r[0] == "P1001")
-        self.assertEqual(float(p1[4]), 100.00)
-        self.assertEqual(float(p1[14]), 49.00)
-        self.assertEqual(p1[15], "49.00%")
+        self.assertEqual(float(p1[idx_recv]), 100.00)
+        self.assertEqual(float(p1[idx_profit]), 49.00)
+        self.assertEqual(p1[idx_margin], "49.00%")
         self.assertIn("attachment", headers.get("Content-Disposition", ""))
 
         # 合计行三值 = 统计卡同源同值（数值类型，非字符串）
@@ -695,14 +699,17 @@ class TestProfit(unittest.TestCase):
         summary = rows[-1]
         self.assertEqual(summary[0], "合计")
         self.assertEqual(summary[1], "共 7 单")
-        self.assertIsInstance(summary[22], (int, float))
-        self.assertIsInstance(summary[23], (int, float))
-        self.assertIsInstance(summary[24], (int, float))
-        self.assertEqual(float(summary[22]),
+        idx_pc = hdr.index("产品成本")
+        idx_cf = hdr.index("快递费合计")
+        idx_cc = hdr.index("综合成本")
+        self.assertIsInstance(summary[idx_pc], (int, float))
+        self.assertIsInstance(summary[idx_cf], (int, float))
+        self.assertIsInstance(summary[idx_cc], (int, float))
+        self.assertEqual(float(summary[idx_pc]),
                          float(stat["product_cost_total"]))
-        self.assertEqual(float(summary[23]),
+        self.assertEqual(float(summary[idx_cf]),
                          float(stat["courier_fee_total"]))
-        self.assertEqual(float(summary[24]),
+        self.assertEqual(float(summary[idx_cc]),
                          float(stat["composite_cost_total"]))
 
         # 按状态筛选：calculated 4 行 + 合计行
@@ -719,13 +726,15 @@ class TestProfit(unittest.TestCase):
         self.assertEqual(st, 200)
         stat = pr["data"]["statistics"]
         summary = rows[-1]
+        hdr2 = rows[0]
         self.assertEqual(summary[0], "合计")
         self.assertEqual(summary[1], "共 4 单")
-        self.assertEqual(float(summary[24]),
+        self.assertEqual(float(summary[hdr2.index("综合成本")]),
                          float(stat["composite_cost_total"]))
 
-        # 空数据导出 → 400
-        status, content, _ = self._get_binary("/api/profit/export?order_id=NOPE")
+        # 空数据导出 → 400（管理员全店聚合无命中时 code=400；单店为 4000）
+        status, content, _ = self._get_binary(
+            f"/api/profit/export?order_id=NOPE&store_id={self.member_store}")
         self.assertEqual(status, 400)
         body = json.loads(content.decode("utf-8"))
         self.assertEqual(body["code"], 4000)

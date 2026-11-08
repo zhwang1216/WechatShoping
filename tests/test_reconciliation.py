@@ -173,7 +173,8 @@ class TestReconciliation(unittest.TestCase):
         self.assertEqual(s["manual_confirmed"], 0)
         self.assertEqual(s["suspected"], 1)
         self.assertEqual(s["unmatched_order"], 1)
-        self.assertEqual(s["unmatched_supplier"], 1)
+        # 无对应微信订单的供应商成本标记为 pending，不进入对账未匹配成本统计
+        self.assertEqual(s["unmatched_supplier"], 0)
         self.assertEqual(s["duplicate_risk"], 2)
         self.assertEqual(s["profit_blocked"], 2)
 
@@ -237,11 +238,17 @@ class TestReconciliation(unittest.TestCase):
         status, resp = self._get("/api/reconciliation?order_id=S9999&match_status=unmatched_supplier")
         self.assertEqual(status, 200)
         rows = resp["data"]["results"]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["supplier_order_key"], "S9999")
-        self.assertEqual(rows[0]["match_status"], "unmatched_supplier")
-        self.assertEqual(len(rows[0]["supplier_record_ids"]), 1)
-        self.assertEqual(len(self._find_anomaly("S9999", "UNMATCHED_SUPPLIER_COST")), 1)
+        self.assertEqual(len(rows), 0,
+                         "待核对成本不参与对账未匹配成本列表")
+        status, resp = self._get("/api/data/supplier_costs")
+        self.assertEqual(status, 200)
+        orphan = next(
+            (r for r in resp["data"]["records"]
+             if r.get("main_order_id") == "S9999"), None)
+        self.assertIsNotNone(orphan)
+        self.assertEqual(
+            (orphan.get("business_validity") or {}).get("validity_status"),
+            "pending")
 
     # ---------- 疑似匹配（辅助候选，禁止自动认定） ----------
     def test_06_suspected_assisted_match(self):
@@ -313,8 +320,9 @@ class TestReconciliation(unittest.TestCase):
         a1 = self._find_anomaly("O1004", "UNMATCHED_ORDER")[0]
         self.assertEqual(a1["status"], "resolved")
         self.assertIn("人工确认", a1["resolution"]["text"])
-        a2 = self._find_anomaly("S9999", "UNMATCHED_SUPPLIER_COST")[0]
-        self.assertEqual(a2["status"], "resolved")
+        self.assertEqual(
+            self._find_anomaly("S9999", "UNMATCHED_SUPPLIER_COST"), [],
+            "待核对成本不生成未匹配供应商异常")
 
     # ---------- 人工确认不被重跑/重导覆盖 ----------
     def test_10_manual_match_preserved(self):

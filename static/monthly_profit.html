@@ -5,19 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>每月盈利 - 微信小店对账与利润核算系统</title>
 <link rel="stylesheet" href="/static/style.css">
-<style>
-.page-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
-.page-head .page-title { margin-bottom: 0; }
-.page-head .page-desc { margin-bottom: 0; flex: 1 1 320px; }
-#month-table tfoot td{font-weight:700;background:#fff;border-top:2px solid var(--border);position:sticky;bottom:0}
-.fee-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.fee-field{display:flex;flex-direction:column;gap:6px}
-.fee-field.full{grid-column:1/-1}
-.fee-field label{font-size:13px;color:var(--text-light,#6b7280)}
-.fee-field input{height:44px;padding:0 12px;border:1px solid var(--border,#e5e7eb);border-radius:8px;font-size:14px}
-.fee-field input:focus{outline:none;border-color:var(--primary,#0f766e)}
-.fee-summary{font-size:12px;color:var(--text-light,#6b7280);background:var(--bg-page,#f9fafb);border-radius:8px;padding:8px 12px;margin-bottom:14px;line-height:1.7}
-</style>
 </head>
 <body>
 <!--@app-shell-->
@@ -66,6 +53,7 @@
 <script src="/static/sidebar.js"></script>
 <script src="/static/month_filter.js"></script>
 <script src="/static/store_scope.js"></script>
+<script src="/static/filter_system.js"></script>
 <script>
 const MONEY_OK = /^\d+(\.\d{1,2})?$/;
 let currentRows = [];
@@ -78,7 +66,7 @@ function timeFilterExplicit() {
 
 const MF = new MonthFilter({
   container: "month-filter",
-  timeLabel: "订单下单时间",
+  timeLabel: FilterSystem.suggestTimeLabel(location.pathname) || "自然月归属",
   onChange: () => load(),
 });
 const SS = new StoreScope({
@@ -87,10 +75,7 @@ const SS = new StoreScope({
 });
 
 function queryStr() {
-  const p = new URLSearchParams();
-  Object.entries(MF.getParams()).forEach(([k, v]) => p.set(k, v));
-  SS.appendTo(p);
-  return p.toString();
+  return FilterSystem.toSearchParams(MF, SS).toString();
 }
 
 function canEditAd() {

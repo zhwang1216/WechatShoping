@@ -11,8 +11,12 @@
   <div class="page-title">普通订单</div>
   <div class="page-desc">默认只展示无任何退款记录的订单；存在退款的订单请前往「退款订单」页面。月份筛选按订单下单时间归属（左闭右开区间）。</div>
 
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
+  <div class="card">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+  </div>
 
   <div class="stat-grid" id="stat-grid"></div>
 
@@ -48,15 +52,7 @@
       </div>
     </div>
     <div class="table-wrap">
-      <table id="orders-table">
-        <thead><tr>
-          <th>订单号</th><th>下单时间</th><th>订单状态</th>
-          <th class="num">实际支付</th><th class="num">实际收款</th><th class="num">技术服务费</th>
-          <th class="num">商品总价</th><th class="num">数量</th><th>商品明细</th>
-          <th>导入批次</th><th class="col-op">操作</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
+      <table id="orders-table"><thead></thead><tbody></tbody></table>
     </div>
     <div id="table-state"></div>
     <div class="pager" id="pager"></div>
@@ -65,7 +61,9 @@
 
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/filter_system.js"></script>
 <script src="/static/common_table.js"></script>
+<script src="/static/data_table.js"></script>
 <script src="/static/list_page.js"></script>
 <script src="/static/modal.js"></script>
 <script src="/static/order_detail.js"></script>
@@ -80,6 +78,8 @@ document.getElementById("f-status").innerHTML += Object.entries(ORDER_STATUS_MET
 
 const ORDERS_PAGE = new ListPage({
   tableId: "orders-table",
+  useDataTable: true,
+  sortFilterIds: { field: "f-order-by", dir: "f-order-dir" },
   url: "/api/orders",
   itemsKey: "orders",
   rowKey: "order_id",
@@ -94,22 +94,29 @@ const ORDERS_PAGE = new ListPage({
     { id: "f-order-dir", param: "order_dir", always: true, reset: "desc" },
   ],
   columns: [
-    { title: "订单号", render: r =>
-      `<span class="copyable" title="点击复制" data-copy="${esc(r.order_id)}">${esc(r.order_id)}</span>` },
-    { title: "下单时间", render: r => fmtTime(r.order_time) },
-    { title: "订单状态", render: r => orderStatusBadge(r.order_status) },
-    { title: "实际支付", align: "right", render: r => fmtMoney(r.amounts.actual_paid_amount) },
-    { title: "实际收款", align: "right", render: r => fmtMoney(r.amounts.actual_received_amount) },
-    { title: "技术服务费", align: "right", render: r => fmtMoney(r.amounts.technical_service_fee) },
-    { title: "商品总价", align: "right", render: r => fmtMoney(r.amounts.product_total) },
-    { title: "数量", align: "right", render: r => r.product_quantity_total },
-    { title: "商品明细", render: r =>
-      `<span style="display:block;max-width:260px;white-space:normal">${esc(r.product_summary)}</span>` },
-    { title: "导入批次", render: r => {
+    { key: "order_id", title: "订单号", type: "orderId", sortable: "order_id", minWidth: 160 },
+    { key: "order_time", title: "下单时间", type: "datetime", sortable: "order_time",
+      render: r => fmtTime(r.order_time) },
+    { key: "order_status", title: "订单状态", type: "status",
+      statusRender: (v, r) => orderStatusBadge(r.order_status) },
+    { key: "actual_paid_amount", title: "实际支付", type: "amount",
+      render: r => fmtMoney(r.amounts.actual_paid_amount) },
+    { key: "actual_received_amount", title: "实际收款", type: "amount", sortable: "actual_received_amount",
+      render: r => fmtMoney(r.amounts.actual_received_amount) },
+    { key: "technical_service_fee", title: "技术服务费", type: "amount",
+      render: r => fmtMoney(r.amounts.technical_service_fee) },
+    { key: "product_total", title: "商品总价", type: "amount",
+      render: r => fmtMoney(r.amounts.product_total) },
+    { key: "product_quantity_total", title: "数量", align: "right",
+      render: r => r.product_quantity_total },
+    { key: "product_summary", title: "商品明细", ellipsis: true,
+      render: r => `<span class="cell-ellipsis" title="${esc(r.product_summary)}">${esc(r.product_summary)}</span>` },
+    { key: "batch_ids", title: "导入批次",
+      render: r => {
       const ids = r.batch_ids || [];
       return `<span title="${esc(ids.join(", "))}">${ids.length} 个批次</span>`;
     } },
-    { title: "操作", fixed: true, render: r =>
+    { key: "_op", title: "操作", fixed: "right", render: r =>
       `<button class="link-btn" type="button" data-detail="${esc(r.order_id)}">详情</button>` },
   ],
   stats: s => s ? renderStatCards(null, [

@@ -116,7 +116,10 @@ function closeModal() {
    适用: 订单详情/退款汇总/成本匹配/日志详情等复杂只读展示场景。
    API 与 openModal 完全一致: { title, bodyHtml, width, actions, onClose } */
 function openDrawer({ title, bodyHtml, width, actions, onClose }) {
-  openModal({ title, bodyHtml, width: width || 480, actions, onClose });
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1024;
+  const drawerW = width || 480;
+  const cap = vw <= 768 ? vw : Math.min(drawerW, Math.max(320, vw - 48));
+  openModal({ title, bodyHtml, width: cap, actions, onClose });
   const overlay = document.getElementById("um-modal");
   if (overlay) overlay.classList.add("modal-drawer");
 }

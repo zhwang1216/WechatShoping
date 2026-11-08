@@ -236,10 +236,24 @@ class TestDeliveryE2E(unittest.TestCase):
                  if a["exception_type"] == "MULTI_ORDER_ONE_COST"
                  and a["status"] == "pending_review"]
         self.assertTrue(any("E2E0091" in a["message"] for a in multi))
-        # 孤儿成本
-        st, r = self._get("/api/reconciliation?order_id=SUP-ORPHAN")
-        rec = r["data"]["results"][0]
-        self.assertEqual(rec["match_status"], "unmatched_supplier")
+        # 孤儿成本：无微信订单 → 业务有效性 pending，不参与对账/异常落库
+        st, r = self._get("/api/data/supplier_costs")
+        self.assertEqual(st, 200)
+        orphan_cost = next(
+            c for c in r["data"]["records"]
+            if c.get("main_order_id") == "SUP-ORPHAN")
+        bv = orphan_cost.get("business_validity") or {}
+        self.assertEqual(bv.get("validity_status"), "pending")
+        self.assertIn("未匹配", bv.get("invalid_reason") or "")
+        st, r = self._get(
+            "/api/reconciliation?match_status=unmatched_supplier&size=100")
+        self.assertEqual(st, 200)
+        orphans = [x for x in r["data"]["results"]
+                   if (x.get("supplier_order_key") or "").find("SUP-ORPHAN") >= 0
+                   or "SUP-ORPHAN" in (x.get("match_detail") or {}).get("rule_hit", "")]
+        self.assertFalse(
+            orphans,
+            "待核对孤儿成本不应出现在有效对账 unmatched_supplier 列表")
 
     # ---------- 4. 人工匹配与异常留痕 ----------
     def test_04_manual_match_and_anomaly_resolution(self):
@@ -334,7 +348,10 @@ class TestDeliveryE2E(unittest.TestCase):
             "/api/profit/export?profit_status=calculated")
         rows = list(load_workbook(io.BytesIO(content)).active.iter_rows(
             values_only=True))
-        self.assertEqual(len(rows) - 1, expected)
+        data_rows = len(rows) - 1
+        if len(rows) > 1 and rows[-1][0] == "合计":
+            data_rows -= 1
+        self.assertEqual(data_rows, expected)
 
     # ---------- 8. 经营总览同口径一致性 ----------
     def test_08_summary_consistency(self):

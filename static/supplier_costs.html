@@ -11,8 +11,12 @@
   <div class="page-title">供应商成本明细</div>
   <div class="page-desc">逐行展示供应商/物流成本记录。月份筛选默认按供应商订单创建时间（created_at）归属（左闭右开区间），可切换为发货时间口径（快递发货时间缺失的记录在按发货时间筛选时不会展示）。</div>
 
-  <div id="month-filter"></div>
-  <div id="store-scope"></div>
+  <div class="card">
+    <div class="list-filters">
+      <div id="month-filter"></div>
+      <div id="store-scope"></div>
+    </div>
+  </div>
 
   <div class="stat-grid" id="stat-grid"></div>
 
@@ -49,16 +53,7 @@
       </div>
     </div>
     <div class="table-wrap">
-      <table id="cost-table">
-        <thead><tr>
-          <th>主订单编号</th><th>供应商订单号</th><th>创建时间</th><th>发货时间</th>
-          <th>商品标题</th><th class="num">数量</th>
-          <th class="num">产品成本</th><th class="num">快递费</th>
-          <th class="num">总金额</th><th class="num">补贴</th>
-          <th>快递单号</th><th>粒度</th><th>匹配状态</th><th class="col-op">操作</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
+      <table id="cost-table"><thead></thead><tbody></tbody></table>
     </div>
     <div id="table-state"></div>
     <div class="pager" id="pager"></div>
@@ -67,7 +62,9 @@
 
 </div>
 <script src="/static/api.js"></script>
+<script src="/static/filter_system.js"></script>
 <script src="/static/common_table.js"></script>
+<script src="/static/data_table.js"></script>
 <script src="/static/list_page.js"></script>
 <script src="/static/modal.js"></script>
 <script src="/static/auth_nav.js"></script>
@@ -93,6 +90,7 @@ let currentRows = [];
 
 const COST_PAGE = new ListPage({
   tableId: "cost-table",
+  useDataTable: true,
   url: "/api/supplier-costs",
   itemsKey: "costs",
   rowKey: "record_id",
@@ -105,24 +103,36 @@ const COST_PAGE = new ListPage({
     { id: "f-time-field", param: "time_field", always: true, reset: "created_at" },
   ],
   columns: [
-    { title: "主订单编号", render: r => esc(r.main_order_id || "—") },
-    { title: "供应商订单号", render: r => esc(r.supplier_order_id || "—") },
-    { title: "创建时间", render: r => fmtTime(r.created_at) },
-    { title: "发货时间", render: r => fmtTime((r.tracking || {}).ship_time) },
-    { title: "商品标题", render: (r, i) => {
+    { key: "main_order_id", title: "主订单编号", type: "orderId",
+      render: r => DataTable.format.orderId(r.main_order_id || "") },
+    { key: "supplier_order_id", title: "供应商订单号", ellipsis: true,
+      render: r => esc(r.supplier_order_id || "—") },
+    { key: "created_at", title: "创建时间", type: "datetime",
+      render: r => fmtTime(r.created_at) },
+    { key: "ship_time", title: "发货时间", type: "datetime",
+      render: r => fmtTime((r.tracking || {}).ship_time) },
+    { key: "product_title", title: "商品标题", ellipsis: true, render: r => {
       const p = r.product || {};
-      return `<span style="display:block;max-width:200px;white-space:normal" title="${esc(p.title || "")}">${esc((p.title || "—").slice(0, 26))}</span>`;
+      const t = p.title || "—";
+      return `<span class="cell-ellipsis" title="${esc(p.title || "")}">${esc(t.length > 26 ? t.slice(0, 26) + "…" : t)}</span>`;
     } },
-    { title: "数量", align: "right", render: r => (r.product || {}).quantity ?? "—" },
-    { title: "产品成本", align: "right", render: r => fmtMoney((r.cost_breakdown || {}).product_supply_cost) },
-    { title: "快递费", align: "right", render: r => fmtMoney((r.cost_breakdown || {}).courier_fee) },
-    { title: "总金额", align: "right", render: r => `<b>${fmtMoney((r.cost_breakdown || {}).total_amount)}</b>` },
-    { title: "补贴", align: "right", render: r => fmtMoney(r.platform_subsidy) },
-    { title: "快递单号", render: r =>
-      `<span style="font-size:12px">${esc((r.tracking || {}).tracking_number || "—")}</span>` },
-    { title: "粒度", render: r => `<span style="font-size:12px">${esc(r.cost_granularity || "—")}</span>` },
-    { title: "匹配状态", render: r => matchBadge(r.match_status) },
-    { title: "操作", fixed: true, render: (r, i) =>
+    { key: "quantity", title: "数量", align: "right",
+      render: r => (r.product || {}).quantity ?? "—" },
+    { key: "product_cost", title: "产品成本", type: "amount",
+      render: r => DataTable.format.amount((r.cost_breakdown || {}).product_supply_cost) },
+    { key: "courier_fee", title: "快递费", type: "amount",
+      render: r => DataTable.format.amount((r.cost_breakdown || {}).courier_fee) },
+    { key: "total_amount", title: "总金额", type: "amount",
+      render: r => DataTable.format.amount((r.cost_breakdown || {}).total_amount, "danger") },
+    { key: "subsidy", title: "补贴", type: "amount",
+      render: r => DataTable.format.amount(r.platform_subsidy, "success") },
+    { key: "tracking", title: "快递单号", ellipsis: true,
+      render: r => esc((r.tracking || {}).tracking_number || "—") },
+    { key: "granularity", title: "粒度",
+      render: r => esc(r.cost_granularity || "—") },
+    { key: "match_status", title: "匹配状态", type: "status",
+      render: r => matchBadge(r.match_status) },
+    { key: "_op", title: "操作", fixed: "right", render: (r, i) =>
       `<button class="link-btn" type="button" data-index="${i}">详情</button>` },
   ],
   stats: s => {
